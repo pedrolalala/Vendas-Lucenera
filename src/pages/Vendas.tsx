@@ -121,6 +121,13 @@ export default function Vendas() {
   const [loading, setLoading] = useState(true)
 
   const [showNfModal, setShowNfModal] = useState(false)
+  // SPEC-153 (pedido do usuário, 2026-09-17): "Emitir Nota Fiscal" abre
+  // primeiro um espelho/pré-visualização da nota cheia (igual ao processo
+  // manual descrito na reunião: "tirar um espelho da nota fiscal cheia" e
+  // ir marcando o que já saiu) -- só depois de revisar isso é que o
+  // formulário de preenchimento (número, pagador, quantidade por item)
+  // aparece.
+  const [nfStep, setNfStep] = useState<'preview' | 'form'>('preview')
   const [vendaAtual, setVendaAtual] = useState<Venda | null>(null)
   const [quantidades, setQuantidades] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
@@ -217,6 +224,7 @@ export default function Vendas() {
     setContatosEncontrados([])
     setContatoSelecionado(null)
     setNomeDestinatario('')
+    setNfStep('preview')
     setShowNfModal(true)
   }
 
@@ -411,208 +419,310 @@ export default function Vendas() {
 
       <Dialog open={showNfModal} onOpenChange={setShowNfModal}>
         <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Emitir Nota Fiscal</DialogTitle>
-            <DialogDescription>
-              Venda {vendaAtual?.numero_venda} · {vendaAtual?.cliente?.nome || 'Sem cliente'} ·
-              Registro manual — a emissão real via Focus NFe é a SPEC-154.
-            </DialogDescription>
-          </DialogHeader>
+          {nfStep === 'preview' ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>Espelho da Nota Fiscal</DialogTitle>
+                <DialogDescription>
+                  Venda {vendaAtual?.numero_venda} · {vendaAtual?.cliente?.nome || 'Sem cliente'} —
+                  revise o que já foi faturado em notas anteriores antes de emitir uma nova.
+                </DialogDescription>
+              </DialogHeader>
 
-          <div className="space-y-6 py-2">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <Label>
-                  Número da NF <span className="text-red-500">*</span>
-                </Label>
-                <Input value={numeroNf} onChange={(e) => setNumeroNf(e.target.value)} />
-              </div>
-              <div className="space-y-2">
-                <Label>Série</Label>
-                <Input value={serie} onChange={(e) => setSerie(e.target.value)} />
-              </div>
-              <div className="space-y-2">
-                <Label>Data de Emissão</Label>
-                <Input
-                  type="date"
-                  value={dataEmissao}
-                  onChange={(e) => setDataEmissao(e.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Tipo</Label>
-                <Select value={tipoOperacao} onValueChange={setTipoOperacao}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="CR">Contas a Receber</SelectItem>
-                    <SelectItem value="CP">Contas a Pagar</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Perfil</Label>
-                <Select value={perfil} onValueChange={setPerfil}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Não informado" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ribeirao">Ribeirão</SelectItem>
-                    <SelectItem value="sao_paulo">São Paulo</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Fornecedor</Label>
-                <Input value={fornecedor} onChange={(e) => setFornecedor(e.target.value)} />
-              </div>
-            </div>
-
-            <div className="space-y-3 rounded-lg border p-4">
-              <Label className="text-sm font-semibold">Pagador desta nota</Label>
-              <p className="text-xs text-muted-foreground">
-                Nota fiscal parcial pode ser emitida em nome de uma pessoa diferente do titular da
-                venda (ex. cônjuge sem cadastro), sem alterar o titular da venda em si.
-              </p>
-              <RadioGroup
-                value={pagadorModo}
-                onValueChange={(v) => setPagadorModo(v as typeof pagadorModo)}
-                className="gap-3"
-              >
-                <div className="flex items-center gap-2">
-                  <RadioGroupItem value="venda" id="pagador-venda" />
-                  <Label htmlFor="pagador-venda" className="font-normal cursor-pointer">
-                    Cliente da venda ({vendaAtual?.cliente?.nome || 'sem cliente cadastrado'})
-                  </Label>
-                </div>
-                <div className="flex items-center gap-2">
-                  <RadioGroupItem value="cadastrado" id="pagador-cadastrado" />
-                  <Label htmlFor="pagador-cadastrado" className="font-normal cursor-pointer">
-                    Outro contato cadastrado
-                  </Label>
-                </div>
-                {pagadorModo === 'cadastrado' && (
-                  <div className="ml-6 space-y-2">
-                    <Input
-                      placeholder="Buscar por nome..."
-                      value={buscaContato}
-                      onChange={(e) => {
-                        setBuscaContato(e.target.value)
-                        setContatoSelecionado(null)
-                      }}
-                    />
-                    {contatoSelecionado ? (
-                      <Badge variant="outline" className="bg-emerald-50 text-emerald-700">
-                        Selecionado: {contatoSelecionado.nome}
-                      </Badge>
-                    ) : (
-                      contatosEncontrados.length > 0 && (
-                        <div className="max-h-40 overflow-y-auto border rounded-md divide-y">
-                          {contatosEncontrados.map((c) => (
-                            <button
-                              type="button"
-                              key={c.id}
-                              className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50"
-                              onClick={() => {
-                                setContatoSelecionado(c)
-                                setBuscaContato(c.nome)
-                                setContatosEncontrados([])
-                              }}
-                            >
-                              {c.nome}
-                            </button>
-                          ))}
+              <div className="space-y-4 py-2">
+                {(vendaAtual?.notas_fiscais?.length ?? 0) > 0 && (
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">Notas já emitidas</Label>
+                    <div className="border rounded-lg divide-y">
+                      {vendaAtual!.notas_fiscais.map((nf) => (
+                        <div
+                          key={nf.id}
+                          className="flex items-center justify-between px-3 py-2 text-sm"
+                        >
+                          <span>
+                            NF {nf.numero_nf}
+                            {nf.data_emissao
+                              ? ` · ${new Date(nf.data_emissao).toLocaleDateString('pt-BR')}`
+                              : ''}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {nf.nome_destinatario || 'Cliente da venda'} ·{' '}
+                            {formatCurrency(nf.valor)}
+                          </span>
                         </div>
-                      )
-                    )}
+                      ))}
+                    </div>
                   </div>
                 )}
-                <div className="flex items-center gap-2">
-                  <RadioGroupItem value="livre" id="pagador-livre" />
-                  <Label htmlFor="pagador-livre" className="font-normal cursor-pointer">
-                    Nome livre (sem cadastro)
+
+                <div className="space-y-2">
+                  <Label className="text-sm font-semibold">
+                    Itens da venda — o que já saiu e o que ainda falta faturar
                   </Label>
+                  <div className="border rounded-lg overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-slate-50">
+                          <TableHead>Descrição</TableHead>
+                          <TableHead className="text-right">Total</TableHead>
+                          <TableHead className="text-right">Já faturado</TableHead>
+                          <TableHead className="text-right">Disponível</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {itensDisponiveis.map(({ item, faturado, disponivel }) => {
+                          const completo = disponivel <= 0
+                          return (
+                            <TableRow key={item.id} className={completo ? 'opacity-50' : ''}>
+                              <TableCell className={`text-sm ${completo ? 'line-through' : ''}`}>
+                                {item.descricao || '-'}
+                              </TableCell>
+                              <TableCell className="text-right">{item.quantidade}</TableCell>
+                              <TableCell className="text-right text-muted-foreground">
+                                {faturado}
+                              </TableCell>
+                              <TableCell className="text-right font-medium">
+                                {completo ? (
+                                  <Badge
+                                    variant="outline"
+                                    className="bg-emerald-50 text-emerald-700"
+                                  >
+                                    Completo
+                                  </Badge>
+                                ) : (
+                                  disponivel
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          )
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
                 </div>
-                {pagadorModo === 'livre' && (
-                  <div className="ml-6">
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setShowNfModal(false)}>
+                  Cancelar
+                </Button>
+                <Button
+                  onClick={() => setNfStep('form')}
+                  disabled={itensDisponiveis.every(({ disponivel }) => disponivel <= 0)}
+                >
+                  Continuar para emissão
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <DialogHeader>
+                <DialogTitle>Emitir Nota Fiscal</DialogTitle>
+                <DialogDescription>
+                  Venda {vendaAtual?.numero_venda} · {vendaAtual?.cliente?.nome || 'Sem cliente'} ·
+                  Registro manual — a emissão real via Focus NFe é a SPEC-154.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-6 py-2">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <Label>
+                      Número da NF <span className="text-red-500">*</span>
+                    </Label>
+                    <Input value={numeroNf} onChange={(e) => setNumeroNf(e.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Série</Label>
+                    <Input value={serie} onChange={(e) => setSerie(e.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Data de Emissão</Label>
                     <Input
-                      placeholder="Nome do pagador"
-                      value={nomeDestinatario}
-                      onChange={(e) => setNomeDestinatario(e.target.value)}
+                      type="date"
+                      value={dataEmissao}
+                      onChange={(e) => setDataEmissao(e.target.value)}
                     />
                   </div>
-                )}
-              </RadioGroup>
-            </div>
+                  <div className="space-y-2">
+                    <Label>Tipo</Label>
+                    <Select value={tipoOperacao} onValueChange={setTipoOperacao}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="CR">Contas a Receber</SelectItem>
+                        <SelectItem value="CP">Contas a Pagar</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Perfil</Label>
+                    <Select value={perfil} onValueChange={setPerfil}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Não informado" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="ribeirao">Ribeirão</SelectItem>
+                        <SelectItem value="sao_paulo">São Paulo</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Fornecedor</Label>
+                    <Input value={fornecedor} onChange={(e) => setFornecedor(e.target.value)} />
+                  </div>
+                </div>
 
-            <div className="space-y-2">
-              <Label className="text-sm font-semibold">Itens</Label>
-              <div className="border rounded-lg overflow-hidden">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="bg-slate-50">
-                      <TableHead>Descrição</TableHead>
-                      <TableHead className="text-right">Total</TableHead>
-                      <TableHead className="text-right">Já faturado</TableHead>
-                      <TableHead className="text-right">Disponível</TableHead>
-                      <TableHead className="text-right w-32">Faturar nesta nota</TableHead>
-                      <TableHead className="text-right">Valor</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {itensDisponiveis.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={6} className="text-center py-6 text-muted-foreground">
-                          Nenhum item nesta venda.
-                        </TableCell>
-                      </TableRow>
-                    ) : (
-                      itensDisponiveis.map(({ item, faturado, disponivel, unitario }) => (
-                        <TableRow key={item.id}>
-                          <TableCell className="text-sm">{item.descricao || '-'}</TableCell>
-                          <TableCell className="text-right">{item.quantidade}</TableCell>
-                          <TableCell className="text-right text-muted-foreground">
-                            {faturado}
-                          </TableCell>
-                          <TableCell className="text-right">{disponivel}</TableCell>
-                          <TableCell className="text-right">
-                            <Input
-                              type="number"
-                              min={0}
-                              max={disponivel}
-                              step="0.001"
-                              disabled={disponivel <= 0}
-                              value={quantidades[item.id] ?? ''}
-                              onChange={(e) =>
-                                handleQuantidadeChange(item.id, disponivel, e.target.value)
-                              }
-                              className="text-right"
-                            />
-                          </TableCell>
-                          <TableCell className="text-right font-mono text-xs">
-                            {formatCurrency(Number(quantidades[item.id] || 0) * unitario)}
-                          </TableCell>
-                        </TableRow>
-                      ))
+                <div className="space-y-3 rounded-lg border p-4">
+                  <Label className="text-sm font-semibold">Pagador desta nota</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Nota fiscal parcial pode ser emitida em nome de uma pessoa diferente do titular
+                    da venda (ex. cônjuge sem cadastro), sem alterar o titular da venda em si.
+                  </p>
+                  <RadioGroup
+                    value={pagadorModo}
+                    onValueChange={(v) => setPagadorModo(v as typeof pagadorModo)}
+                    className="gap-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <RadioGroupItem value="venda" id="pagador-venda" />
+                      <Label htmlFor="pagador-venda" className="font-normal cursor-pointer">
+                        Cliente da venda ({vendaAtual?.cliente?.nome || 'sem cliente cadastrado'})
+                      </Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <RadioGroupItem value="cadastrado" id="pagador-cadastrado" />
+                      <Label htmlFor="pagador-cadastrado" className="font-normal cursor-pointer">
+                        Outro contato cadastrado
+                      </Label>
+                    </div>
+                    {pagadorModo === 'cadastrado' && (
+                      <div className="ml-6 space-y-2">
+                        <Input
+                          placeholder="Buscar por nome..."
+                          value={buscaContato}
+                          onChange={(e) => {
+                            setBuscaContato(e.target.value)
+                            setContatoSelecionado(null)
+                          }}
+                        />
+                        {contatoSelecionado ? (
+                          <Badge variant="outline" className="bg-emerald-50 text-emerald-700">
+                            Selecionado: {contatoSelecionado.nome}
+                          </Badge>
+                        ) : (
+                          contatosEncontrados.length > 0 && (
+                            <div className="max-h-40 overflow-y-auto border rounded-md divide-y">
+                              {contatosEncontrados.map((c) => (
+                                <button
+                                  type="button"
+                                  key={c.id}
+                                  className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50"
+                                  onClick={() => {
+                                    setContatoSelecionado(c)
+                                    setBuscaContato(c.nome)
+                                    setContatosEncontrados([])
+                                  }}
+                                >
+                                  {c.nome}
+                                </button>
+                              ))}
+                            </div>
+                          )
+                        )}
+                      </div>
                     )}
-                  </TableBody>
-                </Table>
-              </div>
-              <p className="text-right text-sm font-semibold">
-                Total desta nota: {formatCurrency(valorTotalSelecionado)}
-              </p>
-            </div>
-          </div>
+                    <div className="flex items-center gap-2">
+                      <RadioGroupItem value="livre" id="pagador-livre" />
+                      <Label htmlFor="pagador-livre" className="font-normal cursor-pointer">
+                        Nome livre (sem cadastro)
+                      </Label>
+                    </div>
+                    {pagadorModo === 'livre' && (
+                      <div className="ml-6">
+                        <Input
+                          placeholder="Nome do pagador"
+                          value={nomeDestinatario}
+                          onChange={(e) => setNomeDestinatario(e.target.value)}
+                        />
+                      </div>
+                    )}
+                  </RadioGroup>
+                </div>
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowNfModal(false)}>
-              Cancelar
-            </Button>
-            <Button onClick={handleRegistrar} disabled={submitting}>
-              {submitting ? 'Registrando...' : 'Registrar Nota Fiscal'}
-            </Button>
-          </DialogFooter>
+                <div className="space-y-2">
+                  <Label className="text-sm font-semibold">Itens</Label>
+                  <div className="border rounded-lg overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-slate-50">
+                          <TableHead>Descrição</TableHead>
+                          <TableHead className="text-right">Total</TableHead>
+                          <TableHead className="text-right">Já faturado</TableHead>
+                          <TableHead className="text-right">Disponível</TableHead>
+                          <TableHead className="text-right w-32">Faturar nesta nota</TableHead>
+                          <TableHead className="text-right">Valor</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {itensDisponiveis.length === 0 ? (
+                          <TableRow>
+                            <TableCell
+                              colSpan={6}
+                              className="text-center py-6 text-muted-foreground"
+                            >
+                              Nenhum item nesta venda.
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          itensDisponiveis.map(({ item, faturado, disponivel, unitario }) => (
+                            <TableRow key={item.id}>
+                              <TableCell className="text-sm">{item.descricao || '-'}</TableCell>
+                              <TableCell className="text-right">{item.quantidade}</TableCell>
+                              <TableCell className="text-right text-muted-foreground">
+                                {faturado}
+                              </TableCell>
+                              <TableCell className="text-right">{disponivel}</TableCell>
+                              <TableCell className="text-right">
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  max={disponivel}
+                                  step="0.001"
+                                  disabled={disponivel <= 0}
+                                  value={quantidades[item.id] ?? ''}
+                                  onChange={(e) =>
+                                    handleQuantidadeChange(item.id, disponivel, e.target.value)
+                                  }
+                                  className="text-right"
+                                />
+                              </TableCell>
+                              <TableCell className="text-right font-mono text-xs">
+                                {formatCurrency(Number(quantidades[item.id] || 0) * unitario)}
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  <p className="text-right text-sm font-semibold">
+                    Total desta nota: {formatCurrency(valorTotalSelecionado)}
+                  </p>
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setNfStep('preview')}>
+                  Voltar ao espelho
+                </Button>
+                <Button onClick={handleRegistrar} disabled={submitting}>
+                  {submitting ? 'Registrando...' : 'Registrar Nota Fiscal'}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
     </div>
