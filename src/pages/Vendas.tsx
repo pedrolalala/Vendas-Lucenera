@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase/client'
 import { redirectWithCode } from '@/lib/cross-system-auth'
+import { cn } from '@/lib/utils'
 import {
   Table,
   TableBody,
@@ -31,18 +32,72 @@ import {
 } from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
 import { FileText, ExternalLink, ShoppingCart } from 'lucide-react'
+import { DanfePreview } from '@/components/vendas/DanfePreview'
 
 // SPEC-153: Financeiro/Admin Bancária continua sendo o dono real de
 // boletos — Vendas só navega até lá (os boletos já nasceram na aprovação do
 // orçamento, `aprovar_orcamento_financeiro`, com status='pendente_registro').
 const FINANCEIRO_URL = 'https://retorno-bancario-bradesco-5392a.goskip.app'
 
-interface OrcamentoItem {
+// SPEC-153 (2026-09-17): dados fiscais do produto usados só no espelho
+// (DANFE visual) -- NCM/CST confirmados em `produtos` (SPEC-132),
+// `porc_st` usado na heurística provisória de CFOP (ver DanfePreview.tsx).
+export interface ProdutoFiscal {
+  id: string
+  nome: string | null
+  sku: string | null
+  codigo_produto: number | null
+  referencia: string | null
+  ncm: string | null
+  cst: string | null
+  unidade: string | null
+  porc_st: number | null
+}
+
+export interface OrcamentoItem {
   id: string
   quantidade: number
   preco_unitario: number | null
   desconto: number | null
   descricao: string | null
+  produto: ProdutoFiscal | null
+}
+
+// SPEC-153 (2026-09-17): emitente real da nota (empresa do orçamento),
+// colunas confirmadas em `supabase/db/current/01_schema_full.sql`.
+export interface EmpresaEmitente {
+  id: string
+  nome: string
+  razao_social: string | null
+  cnpj: string | null
+  inscricao_estadual: string | null
+  logradouro: string | null
+  numero: string | null
+  complemento: string | null
+  bairro: string | null
+  cidade: string
+  estado: string
+  cep: string | null
+  regime_tributario: string | null
+}
+
+// SPEC-153 (2026-09-17): campos extras de `contatos` usados no espelho
+// (destinatário/pagador padrão), colunas confirmadas.
+export interface ClienteFiscal {
+  id: string
+  nome: string
+  razao_social: string | null
+  cpf_cnpj: string | null
+  cnpj: string | null
+  cpf: string | null
+  inscricao_estadual: string | null
+  endereco: string | null
+  numero: string | null
+  bairro: string | null
+  cidade: string | null
+  estado: string | null
+  cep: string | null
+  telefone: string | null
 }
 
 interface NotaFiscalItem {
@@ -62,12 +117,15 @@ interface NotaFiscal {
   notas_fiscais_itens: NotaFiscalItem[]
 }
 
-interface Venda {
+export interface Venda {
   id: string
   numero: string | null
   numero_venda: string | null
   valor_total: number | null
-  cliente: { id: string; nome: string } | null
+  frete_valor: number | null
+  desconto_global: number | null
+  empresa: EmpresaEmitente | null
+  cliente: ClienteFiscal | null
   projeto: { nome: string; codigo: string | null } | null
   orcamento_itens: OrcamentoItem[]
   notas_fiscais: NotaFiscal[]
@@ -78,19 +136,19 @@ interface Contato {
   nome: string
 }
 
-const formatCurrency = (value: number | string | null | undefined) =>
+export const formatCurrency = (value: number | string | null | undefined) =>
   value || value === 0
     ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(value))
     : '-'
 
-function valorUnitario(item: OrcamentoItem): number {
+export function valorUnitario(item: OrcamentoItem): number {
   const preco = item.preco_unitario || 0
   const desconto = item.desconto || 0
   return preco * (1 - desconto / 100)
 }
 
 // Soma quanto de um orcamento_item já foi coberto por notas anteriores.
-function jaFaturado(item: OrcamentoItem, notas: NotaFiscal[]): number {
+export function jaFaturado(item: OrcamentoItem, notas: NotaFiscal[]): number {
   let total = 0
   for (const nf of notas) {
     for (const nfi of nf.notas_fiscais_itens || []) {
@@ -151,10 +209,11 @@ export default function Vendas() {
       .from('orcamentos')
       .select(
         `
-        id, numero, numero_venda, valor_total,
-        cliente:contatos!orcamentos_cliente_id_fkey(id, nome),
+        id, numero, numero_venda, valor_total, frete_valor, desconto_global,
+        empresa:empresas(id, nome, razao_social, cnpj, inscricao_estadual, logradouro, numero, complemento, bairro, cidade, estado, cep, regime_tributario),
+        cliente:contatos!orcamentos_cliente_id_fkey(id, nome, razao_social, cpf_cnpj, cnpj, cpf, inscricao_estadual, endereco, numero, bairro, cidade, estado, cep, telefone),
         projeto:projetos(nome, codigo),
-        orcamento_itens(id, quantidade, preco_unitario, desconto, descricao),
+        orcamento_itens(id, quantidade, preco_unitario, desconto, descricao, produto:produtos(id, nome, sku, codigo_produto, referencia, ncm, cst, unidade, porc_st)),
         notas_fiscais(id, numero_nf, valor, data_emissao, cliente_id, nome_destinatario, notas_fiscais_itens(id, orcamento_item_id, quantidade_faturada, valor_faturado))
       `,
       )
@@ -172,8 +231,13 @@ export default function Vendas() {
       setVendas(
         (data as any[]).map((v) => ({
           ...v,
+          empresa: Array.isArray(v.empresa) ? v.empresa[0] || null : v.empresa,
           cliente: Array.isArray(v.cliente) ? v.cliente[0] || null : v.cliente,
           projeto: Array.isArray(v.projeto) ? v.projeto[0] || null : v.projeto,
+          orcamento_itens: (v.orcamento_itens || []).map((item: any) => ({
+            ...item,
+            produto: Array.isArray(item.produto) ? item.produto[0] || null : item.produto,
+          })),
         })) as Venda[],
       )
     }
@@ -418,7 +482,12 @@ export default function Vendas() {
       </div>
 
       <Dialog open={showNfModal} onOpenChange={setShowNfModal}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+        <DialogContent
+          className={cn(
+            'max-h-[90vh] overflow-y-auto',
+            nfStep === 'preview' ? 'max-w-4xl' : 'max-w-3xl',
+          )}
+        >
           {nfStep === 'preview' ? (
             <>
               <DialogHeader>
@@ -455,51 +524,19 @@ export default function Vendas() {
                   </div>
                 )}
 
-                <div className="space-y-2">
-                  <Label className="text-sm font-semibold">
-                    Itens da venda — o que já saiu e o que ainda falta faturar
-                  </Label>
-                  <div className="border rounded-lg overflow-hidden">
-                    <Table>
-                      <TableHeader>
-                        <TableRow className="bg-slate-50">
-                          <TableHead>Descrição</TableHead>
-                          <TableHead className="text-right">Total</TableHead>
-                          <TableHead className="text-right">Já faturado</TableHead>
-                          <TableHead className="text-right">Disponível</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {itensDisponiveis.map(({ item, faturado, disponivel }) => {
-                          const completo = disponivel <= 0
-                          return (
-                            <TableRow key={item.id} className={completo ? 'opacity-50' : ''}>
-                              <TableCell className={`text-sm ${completo ? 'line-through' : ''}`}>
-                                {item.descricao || '-'}
-                              </TableCell>
-                              <TableCell className="text-right">{item.quantidade}</TableCell>
-                              <TableCell className="text-right text-muted-foreground">
-                                {faturado}
-                              </TableCell>
-                              <TableCell className="text-right font-medium">
-                                {completo ? (
-                                  <Badge
-                                    variant="outline"
-                                    className="bg-emerald-50 text-emerald-700"
-                                  >
-                                    Completo
-                                  </Badge>
-                                ) : (
-                                  disponivel
-                                )}
-                              </TableCell>
-                            </TableRow>
-                          )
-                        })}
-                      </TableBody>
-                    </Table>
+                {vendaAtual && (
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">
+                      Espelho — estrutura de DANFE (documento interno, sem valor fiscal)
+                    </Label>
+                    <DanfePreview
+                      venda={vendaAtual}
+                      itensDisponiveis={itensDisponiveis}
+                      numeroNf={numeroNf}
+                      serie={serie}
+                    />
                   </div>
-                </div>
+                )}
               </div>
 
               <DialogFooter>
