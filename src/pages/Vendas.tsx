@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase/client'
 import { redirectWithCode } from '@/lib/cross-system-auth'
+import { useAuth } from '@/hooks/use-auth'
 import { cn } from '@/lib/utils'
+import { emitirNotaFiscal, type EmitirNotaFiscalErroPreValidacao } from '@/lib/focus-nfe'
 import {
   Table,
   TableBody,
@@ -31,7 +34,16 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
-import { FileText, ExternalLink, ShoppingCart } from 'lucide-react'
+import {
+  FileText,
+  ExternalLink,
+  ShoppingCart,
+  Loader2,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  AlertTriangle,
+} from 'lucide-react'
 import { DanfePreview } from '@/components/vendas/DanfePreview'
 
 // SPEC-153: Financeiro/Admin Bancária continua sendo o dono real de
@@ -107,6 +119,11 @@ interface NotaFiscalItem {
   valor_faturado: number | null
 }
 
+// SPEC-154 (2026-09-21): campos de controle de emissão real via Focus NFe,
+// adicionados a `notas_fiscais` pela migration
+// `20260921_154_focus_nfe_integracao/001`. `status_emissao` é o CHECK
+// constraint real: 'nao_emitida'|'processando_autorizacao'|'autorizado'|
+// 'erro_autorizacao'|'cancelado'.
 interface NotaFiscal {
   id: string
   numero_nf: string
@@ -115,6 +132,13 @@ interface NotaFiscal {
   cliente_id: string | null
   nome_destinatario: string | null
   notas_fiscais_itens: NotaFiscalItem[]
+  status_emissao: string | null
+  status_sefaz: string | null
+  mensagem_sefaz: string | null
+  chave_nfe: string | null
+  arquivo_url: string | null
+  ref: string | null
+  created_at: string | null
 }
 
 export interface Venda {
@@ -158,6 +182,18 @@ export function jaFaturado(item: OrcamentoItem, notas: NotaFiscal[]): number {
   return total
 }
 
+// SPEC-154: nota mais recente de uma venda, por `created_at` -- usada só
+// pra decidir se o status de emissão em andamento/erro precisa aparecer na
+// listagem principal (não muda a lógica de cobertura de itens abaixo).
+function notaMaisRecente(notas: NotaFiscal[]): NotaFiscal | null {
+  if (!notas || notas.length === 0) return null
+  return [...notas].sort((a, b) => {
+    const ta = a.created_at ? new Date(a.created_at).getTime() : 0
+    const tb = b.created_at ? new Date(b.created_at).getTime() : 0
+    return tb - ta
+  })[0]
+}
+
 function statusNota(venda: Venda): { label: string; className: string } {
   if (!venda.orcamento_itens || venda.orcamento_itens.length === 0) {
     return { label: 'Sem itens', className: 'bg-slate-50 text-slate-500' }
@@ -165,6 +201,20 @@ function statusNota(venda: Venda): { label: string; className: string } {
   if (!venda.notas_fiscais || venda.notas_fiscais.length === 0) {
     return { label: 'Nota pendente', className: 'bg-amber-50 text-amber-700' }
   }
+
+  // SPEC-154 (2026-09-21): estende o status pra refletir `status_emissao`
+  // real da nota mais recente quando ela está num estado que precisa de
+  // atenção -- aditivo, não substitui a lógica original de
+  // completa/parcial/pendente abaixo quando a nota mais recente já está
+  // resolvida (autorizada, ou ainda nem tentou emitir de verdade).
+  const recente = notaMaisRecente(venda.notas_fiscais)
+  if (recente?.status_emissao === 'processando_autorizacao') {
+    return { label: 'Processando emissão', className: 'bg-blue-50 text-blue-700' }
+  }
+  if (recente?.status_emissao === 'erro_autorizacao') {
+    return { label: 'Erro na emissão', className: 'bg-red-50 text-red-700' }
+  }
+
   const completa = venda.orcamento_itens.every(
     (item) => jaFaturado(item, venda.notas_fiscais) >= Number(item.quantidade) - 1e-6,
   )
@@ -173,8 +223,24 @@ function statusNota(venda: Venda): { label: string; className: string } {
     : { label: 'Nota parcial', className: 'bg-sky-50 text-sky-700' }
 }
 
+// SPEC-154 (2026-09-21): resultado normalizado do passo "Confirmar e Emitir
+// via Focus NFe", derivado da resposta de `emitir-nota-fiscal` (ver
+// `src/lib/focus-nfe.ts`) + releitura de `notas_fiscais` para os campos que
+// a Edge Function não repete na resposta (chave_nfe/arquivo_url/numero_nf,
+// gravados por `aplicarStatusFocusNaNota`).
+type EmissaoResultado =
+  | { tipo: 'sucesso'; chaveNfe: string | null; arquivoUrl: string | null; numeroNf: string | null }
+  | { tipo: 'processando'; ref: string | null }
+  | { tipo: 'pre_validacao_interna'; bloqueantes: string[] }
+  | { tipo: 'pre_validacao_focus'; erros: EmitirNotaFiscalErroPreValidacao[] }
+  | { tipo: 'configuracao'; mensagem: string }
+  | { tipo: 'retry_esgotado'; mensagem: string }
+  | { tipo: 'erro_generico'; mensagem: string }
+
 export default function Vendas() {
   const { toast } = useToast()
+  const { session } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [vendas, setVendas] = useState<Venda[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -185,10 +251,19 @@ export default function Vendas() {
   // ir marcando o que já saiu) -- só depois de revisar isso é que o
   // formulário de preenchimento (número, pagador, quantidade por item)
   // aparece.
-  const [nfStep, setNfStep] = useState<'preview' | 'form'>('preview')
+  // SPEC-154: novo passo 'emissao' depois que o rascunho já foi criado por
+  // `registrar_nota_fiscal_parcial` -- mostra o resultado de
+  // "Confirmar e Emitir via Focus NFe".
+  const [nfStep, setNfStep] = useState<'preview' | 'form' | 'emissao'>('preview')
   const [vendaAtual, setVendaAtual] = useState<Venda | null>(null)
   const [quantidades, setQuantidades] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
+
+  // SPEC-154: id da nota fiscal (rascunho) já criada nesta sessão do modal,
+  // usado pra chamar `emitir-nota-fiscal`.
+  const [notaFiscalIdAtual, setNotaFiscalIdAtual] = useState<string | null>(null)
+  const [emitindo, setEmitindo] = useState(false)
+  const [resultadoEmissao, setResultadoEmissao] = useState<EmissaoResultado | null>(null)
 
   const [numeroNf, setNumeroNf] = useState('')
   const [serie, setSerie] = useState('')
@@ -214,7 +289,7 @@ export default function Vendas() {
         cliente:contatos!orcamentos_cliente_id_fkey(id, nome, razao_social, cpf_cnpj, cnpj, cpf, inscricao_estadual, endereco, numero, bairro, cidade, estado, cep, telefone),
         projeto:projetos(nome, codigo),
         orcamento_itens(id, quantidade, preco_unitario, desconto, descricao, produto:produtos(id, nome, sku, codigo_produto, referencia, ncm, cst, unidade, porc_st)),
-        notas_fiscais(id, numero_nf, valor, data_emissao, cliente_id, nome_destinatario, notas_fiscais_itens(id, orcamento_item_id, quantidade_faturada, valor_faturado))
+        notas_fiscais(id, numero_nf, valor, data_emissao, cliente_id, nome_destinatario, status_emissao, status_sefaz, mensagem_sefaz, chave_nfe, arquivo_url, ref, created_at, notas_fiscais_itens(id, orcamento_item_id, quantidade_faturada, valor_faturado))
       `,
       )
       .eq('status', 'Orçamento Aprovado')
@@ -247,6 +322,19 @@ export default function Vendas() {
   useEffect(() => {
     fetchVendas()
   }, [])
+
+  // SPEC-154: mantém `vendaAtual` (usado pelo modal já aberto) em sincronia
+  // sempre que a listagem é atualizada -- necessário porque o modal agora
+  // permanece aberto depois de registrar/emitir uma nota (passo 'emissao'),
+  // então o `venda` capturado em `abrirModalNf` ficaria desatualizado sem
+  // isso (ex.: "disponível" de cada item, status_emissao da nota recém-criada).
+  useEffect(() => {
+    setVendaAtual((atual) => {
+      if (!atual) return atual
+      const atualizada = vendas.find((v) => v.id === atual.id)
+      return atualizada || atual
+    })
+  }, [vendas])
 
   useEffect(() => {
     if (pagadorModo !== 'cadastrado' || buscaContato.trim().length < 2) {
@@ -289,8 +377,30 @@ export default function Vendas() {
     setContatoSelecionado(null)
     setNomeDestinatario('')
     setNfStep('preview')
+    setNotaFiscalIdAtual(null)
+    setResultadoEmissao(null)
     setShowNfModal(true)
   }
+
+  // SPEC-154: navegação vinda da tela "Pendências de Nota Fiscal"
+  // (`?venda=<orcamento_id>`) -- abre direto o espelho daquela venda.
+  useEffect(() => {
+    const vendaId = searchParams.get('venda')
+    if (!vendaId || loading || vendas.length === 0) return
+    const alvo = vendas.find((v) => v.id === vendaId)
+    if (alvo) {
+      abrirModalNf(alvo)
+    }
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete('venda')
+        return next
+      },
+      { replace: true },
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, vendas, loading])
 
   const itensDisponiveis = useMemo(() => {
     if (!vendaAtual) return []
@@ -353,7 +463,7 @@ export default function Vendas() {
 
     setSubmitting(true)
     try {
-      const { error } = await (supabase as any).rpc('registrar_nota_fiscal_parcial', {
+      const { data, error } = await (supabase as any).rpc('registrar_nota_fiscal_parcial', {
         p_orcamento_id: vendaAtual.id,
         p_numero_nf: numeroNf.trim(),
         p_itens: itensPayload,
@@ -367,13 +477,178 @@ export default function Vendas() {
       })
       if (error) throw error
 
-      toast({ title: 'Nota fiscal registrada' })
-      setShowNfModal(false)
+      toast({ title: 'Nota fiscal registrada como rascunho' })
+      // SPEC-154: não fecha mais o modal aqui -- a nota nasce como rascunho
+      // (`status_emissao='nao_emitida'`), o próximo passo é o usuário
+      // confirmar a emissão real via Focus NFe.
+      setNotaFiscalIdAtual(data?.nota_fiscal_id ?? null)
+      setResultadoEmissao(null)
+      setNfStep('emissao')
       fetchVendas()
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Erro ao registrar nota', description: err.message })
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  // SPEC-154 (2026-09-21, achado do revisor): `registrar_nota_fiscal_parcial`
+  // sempre INSERE uma nota+itens nova -- nunca atualiza um rascunho
+  // existente. Sem isto, um rascunho rejeitado (pré-validação, config,
+  // retry esgotado) ou abandonado (fechado sem confirmar) continuava
+  // contando pra sempre em `jaFaturado()` (soma por TODAS as notas,
+  // independente de status), prendendo a quantidade "disponível" da venda
+  // mesmo sem nenhuma nota de fato autorizada pela SEFAZ. Cancela (deleta)
+  // o rascunho -- `notas_fiscais_itens` cai junto via ON DELETE CASCADE
+  // (migration 20260917_153.../001) -- sempre que o usuário sai do passo de
+  // emissão sem uma nota autorizada/em processamento de verdade.
+  const cancelarRascunhoSeNecessario = async () => {
+    if (!notaFiscalIdAtual) return
+    const tipo = resultadoEmissao?.tipo
+    // Nunca cancela uma nota que já foi de fato enviada à Focus (autorizada
+    // ou em processamento) -- só rascunhos que nunca saíram do nosso banco
+    // ou que voltaram rejeitados antes/depois do envio.
+    if (tipo === 'sucesso' || tipo === 'processando') return
+
+    const idParaCancelar = notaFiscalIdAtual
+    const { error } = await supabase.from('notas_fiscais').delete().eq('id', idParaCancelar)
+    if (error) {
+      console.error('[Vendas] falha ao cancelar rascunho de nota fiscal:', error)
+      toast({
+        variant: 'destructive',
+        title: 'Não foi possível liberar o rascunho anterior',
+        description: 'A quantidade dessa nota pode continuar indisponível até isso ser resolvido.',
+      })
+      return
+    }
+    await fetchVendas()
+  }
+
+  // SPEC-154 (2026-09-21): chama a Edge Function `emitir-nota-fiscal` para a
+  // nota (rascunho) criada acima. Trata os 6 formatos de resposta
+  // documentados em `emitir-nota-fiscal/index.ts` -- ver `EmissaoResultado`.
+  const handleConfirmarEmissao = async () => {
+    if (!notaFiscalIdAtual) return
+    if (!session?.access_token) {
+      toast({
+        variant: 'destructive',
+        title: 'Sessão expirada',
+        description: 'Faça login novamente para emitir a nota fiscal.',
+      })
+      return
+    }
+
+    setEmitindo(true)
+    setResultadoEmissao(null)
+    try {
+      const { ok, status, body } = await emitirNotaFiscal(notaFiscalIdAtual, session.access_token)
+
+      if (!ok) {
+        if (status === 409 && body?.status_emissao === 'autorizado') {
+          // Nota já autorizada (ex. clique duplo) -- não é bem um "erro".
+          setResultadoEmissao({ tipo: 'sucesso', chaveNfe: null, arquivoUrl: null, numeroNf: null })
+        } else if (status === 409 && body?.status_emissao === 'processando_autorizacao') {
+          setResultadoEmissao({ tipo: 'processando', ref: null })
+        } else if (status === 409) {
+          // Cancelada, ou outro 409 inesperado -- mostra a mensagem literal
+          // da Edge Function em vez de forçar num dos estados conhecidos.
+          setResultadoEmissao({
+            tipo: 'erro_generico',
+            mensagem: body?.error || 'Esta nota não pode ser (re)emitida no estado atual.',
+          })
+        } else if (body?.tipo === 'configuracao') {
+          setResultadoEmissao({
+            tipo: 'configuracao',
+            mensagem: body.error || 'Erro de configuração na Focus NFe (token/CNPJ).',
+          })
+        } else {
+          setResultadoEmissao({
+            tipo: 'erro_generico',
+            mensagem: body?.error || 'Erro inesperado ao emitir a nota fiscal.',
+          })
+        }
+        return
+      }
+
+      if (body?.tipo === 'pre_validacao_interna') {
+        setResultadoEmissao({ tipo: 'pre_validacao_interna', bloqueantes: body.bloqueantes || [] })
+        return
+      }
+      if (body?.tipo === 'pre_validacao_focus') {
+        setResultadoEmissao({ tipo: 'pre_validacao_focus', erros: body.erros || [] })
+        return
+      }
+      if (body?.tipo === 'configuracao') {
+        setResultadoEmissao({
+          tipo: 'configuracao',
+          mensagem: body.mensagem || 'Erro de configuração na Focus NFe (token/CNPJ).',
+        })
+        return
+      }
+      if (body?.tipo === 'retry_esgotado') {
+        setResultadoEmissao({
+          tipo: 'retry_esgotado',
+          mensagem: body.mensagem || 'Focus NFe indisponível. Tente novamente em alguns minutos.',
+        })
+        return
+      }
+
+      // Caminho de sucesso (201/202 da Focus) -- a resposta da Edge Function
+      // só traz `status_emissao`/`ref`, não repete chave_nfe/arquivo_url
+      // (gravados direto em `notas_fiscais` por `aplicarStatusFocusNaNota`).
+      // Relê a nota pra pegar esses campos e mostrar de fato o que foi
+      // gravado.
+      const { data: notaAtualizada, error: erroRefetch } = await supabase
+        .from('notas_fiscais')
+        .select('status_emissao, mensagem_sefaz, chave_nfe, arquivo_url, numero_nf')
+        .eq('id', notaFiscalIdAtual)
+        .maybeSingle()
+
+      if (erroRefetch) {
+        // Achado do revisor (2026-09-21): não deixa a UI mostrar um card de
+        // sucesso silenciosamente incompleto (sem chave/arquivo) sem
+        // explicar por quê -- loga e avisa, mas não trata como falha de
+        // emissão (a nota já foi processada pela Focus, só não conseguimos
+        // reler os detalhes agora).
+        console.error('[Vendas] falha ao reler notas_fiscais após emissão:', erroRefetch)
+        toast({
+          title: 'Nota processada, mas os detalhes não carregaram',
+          description: 'Confira o status atualizado na listagem principal em instantes.',
+        })
+      }
+
+      const statusFinal = (notaAtualizada as any)?.status_emissao || body?.status_emissao
+
+      if (statusFinal === 'autorizado') {
+        setResultadoEmissao({
+          tipo: 'sucesso',
+          chaveNfe: (notaAtualizada as any)?.chave_nfe ?? null,
+          arquivoUrl: (notaAtualizada as any)?.arquivo_url ?? null,
+          numeroNf: (notaAtualizada as any)?.numero_nf ?? null,
+        })
+      } else if (statusFinal === 'processando_autorizacao') {
+        setResultadoEmissao({ tipo: 'processando', ref: body?.ref ?? null })
+      } else {
+        // status_emissao voltou 'erro_autorizacao' mesmo no caminho HTTP de
+        // sucesso (ex. Focus respondeu 201 já com status rejeitado/denegado)
+        // -- mostra o que temos, histórico completo fica em
+        // "Pendências de Nota Fiscal".
+        setResultadoEmissao({
+          tipo: 'erro_generico',
+          mensagem:
+            (notaAtualizada as any)?.mensagem_sefaz ||
+            'A Focus NFe rejeitou a emissão. Veja "Pendências de Nota Fiscal" para detalhes.',
+        })
+      }
+
+      fetchVendas()
+    } catch (err: any) {
+      setResultadoEmissao({
+        tipo: 'erro_generico',
+        mensagem: err?.message || 'Erro de rede ao emitir a nota fiscal.',
+      })
+    } finally {
+      setEmitindo(false)
     }
   }
 
@@ -460,7 +735,11 @@ export default function Vendas() {
                         size="sm"
                         className="gap-1.5"
                         onClick={() => abrirModalNf(venda)}
-                        disabled={status.label === 'Nota completa' || status.label === 'Sem itens'}
+                        disabled={
+                          status.label === 'Nota completa' ||
+                          status.label === 'Sem itens' ||
+                          status.label === 'Processando emissão'
+                        }
                       >
                         <FileText className="h-3.5 w-3.5" /> Emitir Nota Fiscal
                       </Button>
@@ -481,11 +760,22 @@ export default function Vendas() {
         </Table>
       </div>
 
-      <Dialog open={showNfModal} onOpenChange={setShowNfModal}>
+      <Dialog
+        open={showNfModal}
+        onOpenChange={(open) => {
+          // Fechar clicando fora/Esc precisa do mesmo cuidado do botão
+          // "Fechar" -- senão um clique acidental fora do modal também
+          // deixaria um rascunho órfão preso.
+          if (!open) {
+            void cancelarRascunhoSeNecessario()
+          }
+          setShowNfModal(open)
+        }}
+      >
         <DialogContent
           className={cn(
             'max-h-[90vh] overflow-y-auto',
-            nfStep === 'preview' ? 'max-w-4xl' : 'max-w-3xl',
+            nfStep === 'preview' ? 'max-w-4xl' : nfStep === 'form' ? 'max-w-3xl' : 'max-w-lg',
           )}
         >
           {nfStep === 'preview' ? (
@@ -508,11 +798,32 @@ export default function Vendas() {
                           key={nf.id}
                           className="flex items-center justify-between px-3 py-2 text-sm"
                         >
-                          <span>
+                          <span className="flex items-center gap-2">
                             NF {nf.numero_nf}
                             {nf.data_emissao
                               ? ` · ${new Date(nf.data_emissao).toLocaleDateString('pt-BR')}`
                               : ''}
+                            {/* SPEC-154: status_emissao real (Focus NFe) por nota */}
+                            {nf.status_emissao && nf.status_emissao !== 'nao_emitida' && (
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  'text-[10px]',
+                                  nf.status_emissao === 'autorizado' &&
+                                    'bg-emerald-50 text-emerald-700',
+                                  nf.status_emissao === 'processando_autorizacao' &&
+                                    'bg-blue-50 text-blue-700',
+                                  nf.status_emissao === 'erro_autorizacao' &&
+                                    'bg-red-50 text-red-700',
+                                  nf.status_emissao === 'cancelado' && 'bg-slate-100 text-slate-600',
+                                )}
+                              >
+                                {nf.status_emissao === 'autorizado' && 'Autorizado'}
+                                {nf.status_emissao === 'processando_autorizacao' && 'Processando'}
+                                {nf.status_emissao === 'erro_autorizacao' && 'Erro na emissão'}
+                                {nf.status_emissao === 'cancelado' && 'Cancelado'}
+                              </Badge>
+                            )}
                           </span>
                           <span className="text-muted-foreground">
                             {nf.nome_destinatario || 'Cliente da venda'} ·{' '}
@@ -551,13 +862,14 @@ export default function Vendas() {
                 </Button>
               </DialogFooter>
             </>
-          ) : (
+          ) : nfStep === 'form' ? (
             <>
               <DialogHeader>
                 <DialogTitle>Emitir Nota Fiscal</DialogTitle>
                 <DialogDescription>
                   Venda {vendaAtual?.numero_venda} · {vendaAtual?.cliente?.nome || 'Sem cliente'} ·
-                  Registro manual — a emissão real via Focus NFe é a SPEC-154.
+                  Preencha os dados do rascunho — a emissão real via Focus NFe (SPEC-154) é
+                  confirmada no próximo passo.
                 </DialogDescription>
               </DialogHeader>
 
@@ -755,7 +1067,189 @@ export default function Vendas() {
                   Voltar ao espelho
                 </Button>
                 <Button onClick={handleRegistrar} disabled={submitting}>
-                  {submitting ? 'Registrando...' : 'Registrar Nota Fiscal'}
+                  {submitting ? 'Registrando...' : 'Registrar Nota Fiscal (rascunho)'}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              {/* SPEC-154 (2026-09-21): passo "emissão" — depois do rascunho já
+                  criado (registrar_nota_fiscal_parcial), confirma a emissão
+                  real via Focus NFe e mostra o resultado de cada um dos
+                  formatos de resposta documentados em
+                  emitir-nota-fiscal/index.ts. */}
+              <DialogHeader>
+                <DialogTitle>Emissão via Focus NFe</DialogTitle>
+                <DialogDescription>
+                  Venda {vendaAtual?.numero_venda} · {vendaAtual?.cliente?.nome || 'Sem cliente'} —
+                  nota registrada como rascunho, ainda não transmitida à SEFAZ.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-4 py-2">
+                {!resultadoEmissao && !emitindo && (
+                  <div className="rounded-lg border p-4 bg-slate-50 text-sm text-slate-700 space-y-2">
+                    <p>
+                      A nota fiscal foi registrada como rascunho (ambiente de homologação até a
+                      validação de CFOP com o contador). Confirme para transmitir de fato à Focus
+                      NFe.
+                    </p>
+                  </div>
+                )}
+
+                {emitindo && (
+                  <div className="rounded-lg border p-6 flex flex-col items-center gap-2 text-sm text-slate-600">
+                    <Loader2 className="h-6 w-6 animate-spin text-indigo-600" />
+                    Enviando para a Focus NFe...
+                  </div>
+                )}
+
+                {!emitindo && resultadoEmissao?.tipo === 'processando' && (
+                  <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 flex gap-3 text-sm text-blue-800">
+                    <Clock className="h-5 w-5 shrink-0" />
+                    <div>
+                      <p className="font-semibold">Processando autorização...</p>
+                      <p>
+                        A Focus NFe está processando a nota{resultadoEmissao.ref ? ` (ref ${resultadoEmissao.ref})` : ''}.
+                        O status final chega automaticamente por webhook (ou pelo job de
+                        verificação, em até 10 minutos) — pode fechar esta janela e acompanhar pela
+                        listagem principal.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {!emitindo && resultadoEmissao?.tipo === 'sucesso' && (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 flex gap-3 text-sm text-emerald-800">
+                    <CheckCircle2 className="h-5 w-5 shrink-0" />
+                    <div className="space-y-1">
+                      <p className="font-semibold">Nota fiscal autorizada.</p>
+                      {resultadoEmissao.numeroNf && <p>Número: {resultadoEmissao.numeroNf}</p>}
+                      {resultadoEmissao.chaveNfe && (
+                        <p className="font-mono text-xs break-all">
+                          Chave: {resultadoEmissao.chaveNfe}
+                        </p>
+                      )}
+                      {resultadoEmissao.arquivoUrl && (
+                        <a
+                          href={resultadoEmissao.arquivoUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 underline font-medium"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" /> Ver XML/DANFE
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {!emitindo && resultadoEmissao?.tipo === 'pre_validacao_interna' && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 space-y-2">
+                    <div className="flex gap-2 items-center font-semibold">
+                      <AlertTriangle className="h-5 w-5 shrink-0" />
+                      Cadastro incompleto — não chegou a ser enviado à Focus NFe
+                    </div>
+                    <ul className="list-disc pl-6 space-y-1">
+                      {resultadoEmissao.bloqueantes.map((b, i) => (
+                        <li key={i}>{b}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {!emitindo && resultadoEmissao?.tipo === 'pre_validacao_focus' && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 space-y-2">
+                    <div className="flex gap-2 items-center font-semibold">
+                      <AlertTriangle className="h-5 w-5 shrink-0" />
+                      Focus NFe rejeitou os dados enviados (pré-validação)
+                    </div>
+                    <ul className="list-disc pl-6 space-y-1">
+                      {resultadoEmissao.erros.length === 0 ? (
+                        <li>Erro de validação sem detalhamento — ver "Pendências de Nota Fiscal".</li>
+                      ) : (
+                        resultadoEmissao.erros.map((e, i) => (
+                          <li key={i}>
+                            {e.campo && <span className="font-mono">{e.campo}</span>}
+                            {e.campo ? ': ' : ''}
+                            {e.mensagem}
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  </div>
+                )}
+
+                {!emitindo && resultadoEmissao?.tipo === 'configuracao' && (
+                  <div className="rounded-lg border border-orange-200 bg-orange-50 p-4 flex gap-3 text-sm text-orange-800">
+                    <AlertTriangle className="h-5 w-5 shrink-0" />
+                    <div>
+                      <p className="font-semibold">Problema de configuração — não é a venda</p>
+                      <p>{resultadoEmissao.mensagem}</p>
+                    </div>
+                  </div>
+                )}
+
+                {!emitindo && resultadoEmissao?.tipo === 'retry_esgotado' && (
+                  <div className="rounded-lg border border-orange-200 bg-orange-50 p-4 flex gap-3 text-sm text-orange-800">
+                    <AlertTriangle className="h-5 w-5 shrink-0" />
+                    <div>
+                      <p className="font-semibold">Focus NFe indisponível</p>
+                      <p>{resultadoEmissao.mensagem}</p>
+                    </div>
+                  </div>
+                )}
+
+                {!emitindo && resultadoEmissao?.tipo === 'erro_generico' && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-4 flex gap-3 text-sm text-red-800">
+                    <XCircle className="h-5 w-5 shrink-0" />
+                    <div>
+                      <p className="font-semibold">Erro ao emitir</p>
+                      <p>{resultadoEmissao.mensagem}</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <DialogFooter className="gap-2">
+                {(!resultadoEmissao ||
+                  resultadoEmissao.tipo === 'retry_esgotado' ||
+                  resultadoEmissao.tipo === 'configuracao') && (
+                  <Button onClick={handleConfirmarEmissao} disabled={emitindo}>
+                    {emitindo
+                      ? 'Enviando...'
+                      : resultadoEmissao
+                        ? 'Tentar novamente'
+                        : 'Confirmar e Emitir via Focus NFe'}
+                  </Button>
+                )}
+                {(resultadoEmissao?.tipo === 'pre_validacao_interna' ||
+                  resultadoEmissao?.tipo === 'pre_validacao_focus') && (
+                  <Button
+                    variant="outline"
+                    onClick={async () => {
+                      // Cancela o rascunho rejeitado ANTES de voltar pro
+                      // formulário -- senão o próximo "Registrar Nota
+                      // Fiscal" cria um segundo rascunho e o primeiro fica
+                      // pra sempre contando como "já faturado" (achado do
+                      // revisor, ver cancelarRascunhoSeNecessario acima).
+                      await cancelarRascunhoSeNecessario()
+                      setNotaFiscalIdAtual(null)
+                      setResultadoEmissao(null)
+                      setNfStep('form')
+                    }}
+                  >
+                    Corrigir e tentar novamente
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    await cancelarRascunhoSeNecessario()
+                    setShowNfModal(false)
+                  }}
+                >
+                  Fechar
                 </Button>
               </DialogFooter>
             </>

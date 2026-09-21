@@ -6,6 +6,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { AuthProvider, useAuth } from '@/hooks/use-auth'
 import Layout from './components/Layout'
 import Vendas from './pages/Vendas'
+import PendenciasNotaFiscal from './pages/PendenciasNotaFiscal'
 import Login from './pages/Login'
 import NotFound from './pages/NotFound'
 
@@ -43,6 +44,7 @@ const AppRoutes = () => {
       >
         <Route path="/" element={<Navigate to="/vendas" replace />} />
         <Route path="/vendas" element={<Vendas />} />
+        <Route path="/pendencias-nota-fiscal" element={<PendenciasNotaFiscal />} />
       </Route>
       <Route path="*" element={<NotFound />} />
     </Routes>
