@@ -107,16 +107,16 @@ Deno.serve(async (req: Request) => {
       .select(
         `
         id, ref, tentativa_atual, status_emissao, cliente_id, nome_destinatario, orcamento_id,
-        cliente:contatos(id, nome, razao_social, cpf_cnpj, cnpj, cpf, inscricao_estadual, endereco, numero, bairro, cidade, estado, cep, telefone),
+        cliente:contatos(id, nome, razao_social, cpf_cnpj, cnpj, cpf, inscricao_estadual, endereco, numero, bairro, cidade, estado, cep, telefone, email),
         orcamento:orcamentos(
-          id, numero_venda, frete_valor, frete_tipo, cliente_id, empresa_id,
+          id, numero_venda, frete_valor, frete_tipo, forma_pagamento, cliente_id, empresa_id,
           empresa:empresas(nome, razao_social, cnpj, inscricao_estadual, logradouro, numero, complemento, bairro, cidade, estado, cep, regime_tributario, codigo_municipio_ibge),
-          cliente:contatos!orcamentos_cliente_id_fkey(id, nome, razao_social, cpf_cnpj, cnpj, cpf, inscricao_estadual, endereco, numero, bairro, cidade, estado, cep, telefone)
+          cliente:contatos!orcamentos_cliente_id_fkey(id, nome, razao_social, cpf_cnpj, cnpj, cpf, inscricao_estadual, endereco, numero, bairro, cidade, estado, cep, telefone, email)
         ),
         notas_fiscais_itens(
           id, orcamento_item_id, quantidade_faturada, valor_faturado,
           orcamento_item:orcamento_itens(id, preco_unitario, desconto, descricao,
-            produto:produtos(nome, sku, codigo_produto, referencia, ncm, cst, unidade, porc_st))
+            produto:produtos(nome, sku, codigo_produto, referencia, ncm, cst, unidade, porc_st, cest))
         )
       `,
       )
@@ -202,6 +202,7 @@ Deno.serve(async (req: Request) => {
               cst: produto.cst ?? null,
               unidade: produto.unidade ?? null,
               porc_st: produto.porc_st != null ? Number(produto.porc_st) : null,
+              cest: produto.cest ?? null,
             }
           : null,
       }
@@ -263,12 +264,14 @@ Deno.serve(async (req: Request) => {
             estado: destinatario.estado ?? null,
             cep: destinatario.cep ?? null,
             telefone: destinatario.telefone ?? null,
+            email: destinatario.email ?? null,
           }
         : null,
       nomeDestinatarioLivre: !destinatario ? nota.nome_destinatario : null,
       itens,
       freteValor: orcamento.frete_valor != null ? Number(orcamento.frete_valor) : null,
       freteTipo: orcamento.frete_tipo ?? null,
+      formaPagamento: orcamento.forma_pagamento ?? null,
     })
 
     // Pré-validação interna (nunca chegou a ir pra Focus) -- mesmo

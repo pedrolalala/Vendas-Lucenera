@@ -53,6 +53,7 @@ export interface DestinatarioDados {
   estado: string | null
   cep: string | null
   telefone: string | null
+  email?: string | null
 }
 
 export interface ItemNotaDados {
@@ -71,6 +72,7 @@ export interface ItemNotaDados {
     cst: string | null
     unidade: string | null
     porc_st: number | null
+    cest?: string | null
   } | null
 }
 
@@ -83,6 +85,8 @@ export interface MontarPayloadInput {
   itens: ItemNotaDados[]
   freteValor: number | null
   freteTipo: string | null
+  /** SPEC-165: orcamentos.forma_pagamento (pix, boleto, cartao, dinheiro...). */
+  formaPagamento?: string | null
 }
 
 export interface MontarPayloadResultado {
@@ -114,6 +118,29 @@ function agoraIsoSaoPaulo(): string {
     `${sp.getFullYear()}-${pad(sp.getMonth() + 1)}-${pad(sp.getDate())}` +
     `T${pad(sp.getHours())}:${pad(sp.getMinutes())}:${pad(sp.getSeconds())}-03:00`
   )
+}
+
+// SPEC-165: código de regime tributário (CRT) a partir do texto livre de
+// empresas.regime_tributario. null = não informado (bloqueia a emissão: sem
+// regime não dá pra saber se o ICMS vai como CST ou CSOSN).
+export function crtDoRegime(regime: string | null | undefined): '1' | '2' | '3' | null {
+  const r = (regime || '').trim().toLowerCase()
+  if (!r) return null
+  if (r === '2' || r.includes('sublimite')) return '2'
+  if (r === '1' || r.includes('simples') || r === 'mei') return '1'
+  if (r === '3' || r.includes('presumido') || r.includes('real') || r.includes('normal')) return '3'
+  return null
+}
+
+// SPEC-165: grupo de pagamento (obrigatório na NF-e 4.00), tPag da SEFAZ.
+const FORMA_PAGAMENTO_NFE: Record<string, string> = {
+  dinheiro: '01',
+  cartao: '03',
+  cartao_credito: '03',
+  cartao_debito: '04',
+  boleto: '15',
+  pix: '17',
+  transferencia: '18',
 }
 
 export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResultado {
@@ -148,6 +175,26 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
     bloqueantes.push('Nenhum item informado para a nota fiscal.')
   }
 
+  const crt = crtDoRegime(input.empresa.regime_tributario)
+  if (!crt) {
+    bloqueantes.push(
+      'empresas.regime_tributario vazio ou não reconhecido -- informar o regime (Simples Nacional / Lucro Presumido / Lucro Real) antes de emitir (SPEC-165).',
+    )
+  }
+
+  // SPEC-165: destino da operação. Interestadual exige CFOP 6xxx e, para
+  // consumidor final não contribuinte, DIFAL -- regra ainda não validada com
+  // o contador, então bloqueia em vez de emitir com CFOP de operação interna.
+  const ufEmitente = (input.empresa.estado || '').trim().toUpperCase()
+  const ufDestino = (input.destinatario?.estado || '').trim().toUpperCase()
+  const interestadual = !!ufDestino && !!ufEmitente && ufDestino !== ufEmitente
+  if (interestadual) {
+    bloqueantes.push(
+      `Destinatário em ${ufDestino} (emitente em ${ufEmitente}): venda interestadual exige CFOP 6xxx/DIFAL, pendente de validação do contador (SPEC-165).`,
+    )
+  }
+  const consumidorFinal = input.destinatario?.inscricao_estadual ? '0' : '1'
+
   const itensPayload = input.itens.map((item, idx) => {
     const numeroItem = idx + 1
     const produto = item.produto
@@ -156,6 +203,15 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
     }
     if (!produto?.cst) {
       bloqueantes.push(`Item ${numeroItem} (${produto?.nome || item.descricao || 'sem nome'}): produto sem CST cadastrado.`)
+    } else if (crt) {
+      // Simples Nacional usa CSOSN (3 dígitos, ex. 102/500); regime normal usa CST (2 dígitos).
+      const digitos = produto.cst.replace(/\D/g, '').length
+      if (crt === '1' && digitos !== 3) {
+        bloqueantes.push(`Item ${numeroItem} (${produto?.nome || item.descricao || 'sem nome'}): empresa do Simples Nacional exige CSOSN (3 dígitos), cadastrado "${produto.cst}".`)
+      }
+      if (crt === '3' && digitos !== 2) {
+        bloqueantes.push(`Item ${numeroItem} (${produto?.nome || item.descricao || 'sem nome'}): regime normal exige CST (2 dígitos), cadastrado "${produto.cst}".`)
+      }
     }
 
     const unit = valorUnitario(item)
@@ -184,6 +240,8 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
       icms_situacao_tributaria: produto?.cst || null,
       pis_situacao_tributaria: '99', // SPEC-154: default -- produtos não tem CST de PIS por item ainda (pendência).
       cofins_situacao_tributaria: '99', // SPEC-154: default -- idem, COFINS.
+      // SPEC-165: CEST obrigatório quando há substituição tributária.
+      ...(produto?.cest ? { cest: String(produto.cest).replace(/\D/g, '') } : {}),
     }
   })
 
@@ -196,10 +254,27 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
   }
 
   const semFrete = input.freteTipo === 'sem_frete' || !input.freteValor
+  const valorProdutos =
+    Math.round(itensPayload.reduce((acc, it) => acc + Number(it.valor_bruto || 0), 0) * 100) / 100
+  const formaNormalizada = (input.formaPagamento || '').trim().toLowerCase()
+  const tPag = FORMA_PAGAMENTO_NFE[formaNormalizada] || '99'
+  if (tPag === '99') {
+    avisos.push(
+      `forma_pagamento "${input.formaPagamento || '-'}" sem mapeamento -- enviado como 99 (outros).`,
+    )
+  }
+  avisos.push(
+    'PIS/COFINS e IBS/CBS pendentes de definição do contador (SPEC-165): PIS/COFINS vão como 99; grupo IBS/CBS não enviado.',
+  )
   avisos.push(
     `presenca_comprador default "9" (não presencial, outros) -- venda não registra esse dado ainda.`,
     `indicador_ie_destinatario default "${input.destinatario?.inscricao_estadual ? '1' : '9'}" com base em ter/não ter IE cadastrada.`,
     `modalidade_frete default "${semFrete ? '9' : '0'}" com base em orcamentos.frete_tipo.`,
+    ...(semFrete
+      ? []
+      : [
+          'valor_frete NÃO enviado: nota parcial não sabe que fração do frete da venda lhe cabe (decisão pendente, SPEC-165).',
+        ]),
   )
 
   // Dados cadastrais do emitente (razão social, endereço, IE, regime
@@ -219,6 +294,11 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
     presenca_comprador: '9',
     modalidade_frete: semFrete ? '9' : '0',
     cnpj_emitente: cnpjEmitente,
+    // SPEC-165: campos que faltavam no JSON.
+    regime_tributario_emitente: crt,
+    local_destino: interestadual ? 2 : 1,
+    consumidor_final: consumidorFinal,
+    formas_pagamento: [{ forma_pagamento: tPag, valor_pagamento: valorProdutos }],
 
     // CNPJ tem 14 dígitos, CPF tem 11 -- é assim que a própria Focus espera
     // que a gente escolha entre os dois campos mutuamente exclusivos.
@@ -235,6 +315,7 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
           uf_destinatario: input.destinatario.estado || null,
           cep_destinatario: soDigitos(input.destinatario.cep) || null,
           telefone_destinatario: soDigitos(input.destinatario.telefone) || null,
+          ...(input.destinatario.email ? { email_destinatario: input.destinatario.email } : {}),
           inscricao_estadual_destinatario: input.destinatario.inscricao_estadual || null,
           indicador_inscricao_estadual_destinatario: input.destinatario.inscricao_estadual ? '1' : '9',
         }
