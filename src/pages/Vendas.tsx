@@ -43,6 +43,7 @@ import {
   XCircle,
   Clock,
   AlertTriangle,
+  Search,
 } from 'lucide-react'
 import { DanfePreview } from '@/components/vendas/DanfePreview'
 
@@ -243,6 +244,10 @@ export default function Vendas() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [vendas, setVendas] = useState<Venda[]>([])
   const [loading, setLoading] = useState(true)
+  // SPEC-176: busca (venda, cliente, projeto, empresa) + filtro por empresa
+  // faturada, aplicados juntos.
+  const [busca, setBusca] = useState('')
+  const [empresaFiltro, setEmpresaFiltro] = useState('todas')
 
   const [showNfModal, setShowNfModal] = useState(false)
   // SPEC-153 (pedido do usuário, 2026-09-17): "Emitir Nota Fiscal" abre
@@ -661,6 +666,32 @@ export default function Vendas() {
     }
   }
 
+  const empresasFaturadas = useMemo(() => {
+    const porId = new Map<string, string>()
+    vendas.forEach((v) => {
+      if (v.empresa?.id) porId.set(v.empresa.id, v.empresa.nome || 'Sem nome')
+    })
+    return [...porId.entries()]
+      .map(([id, nome]) => ({ id, nome }))
+      .sort((a, b) => a.nome.localeCompare(b.nome))
+  }, [vendas])
+
+  const vendasFiltradas = useMemo(() => {
+    const termo = busca.trim().toLowerCase()
+    return vendas.filter((v) => {
+      if (empresaFiltro !== 'todas' && v.empresa?.id !== empresaFiltro) return false
+      if (!termo) return true
+      return [
+        v.numero_venda,
+        v.numero,
+        v.cliente?.nome,
+        v.projeto?.codigo,
+        v.projeto?.nome,
+        v.empresa?.nome,
+      ].some((campo) => (campo || '').toLowerCase().includes(termo))
+    })
+  }, [vendas, busca, empresaFiltro])
+
   return (
     <div className="flex flex-col gap-6 animate-fade-in pb-20 w-full max-w-7xl mx-auto">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -678,12 +709,38 @@ export default function Vendas() {
         </div>
       </div>
 
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            placeholder="Buscar por número da venda, cliente, projeto ou empresa..."
+            className="pl-9 bg-white"
+          />
+        </div>
+        <Select value={empresaFiltro} onValueChange={setEmpresaFiltro}>
+          <SelectTrigger className="w-full sm:w-64 bg-white">
+            <SelectValue placeholder="Empresa faturada" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="todas">Todas as empresas</SelectItem>
+            {empresasFaturadas.map((e) => (
+              <SelectItem key={e.id} value={e.id}>
+                {e.nome}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
       <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
         <Table>
           <TableHeader>
             <TableRow className="bg-slate-50">
               <TableHead>Venda</TableHead>
               <TableHead>Orçamento</TableHead>
+              <TableHead>Empresa Faturada</TableHead>
               <TableHead>Cliente</TableHead>
               <TableHead>Projeto</TableHead>
               <TableHead className="text-right">Valor</TableHead>
@@ -694,18 +751,20 @@ export default function Vendas() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-8">
+                <TableCell colSpan={8} className="text-center py-8">
                   Carregando...
                 </TableCell>
               </TableRow>
-            ) : vendas.length === 0 ? (
+            ) : vendasFiltradas.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                  Nenhuma venda (orçamento aprovado) encontrada.
+                <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                  {vendas.length === 0
+                    ? 'Nenhuma venda (orçamento aprovado) encontrada.'
+                    : 'Nenhuma venda encontrada com essa busca/empresa.'}
                 </TableCell>
               </TableRow>
             ) : (
-              vendas.map((venda) => {
+              vendasFiltradas.map((venda) => {
                 const status = statusNota(venda)
                 return (
                   <TableRow key={venda.id}>
@@ -715,6 +774,7 @@ export default function Vendas() {
                     <TableCell className="font-mono text-xs text-slate-600">
                       {venda.numero || '-'}
                     </TableCell>
+                    <TableCell className="text-sm">{venda.empresa?.nome || '-'}</TableCell>
                     <TableCell>{venda.cliente?.nome || '-'}</TableCell>
                     <TableCell className="text-xs text-slate-600">
                       {venda.projeto?.codigo
