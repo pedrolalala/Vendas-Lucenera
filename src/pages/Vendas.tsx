@@ -201,7 +201,8 @@ function statusNota(venda: Venda): { label: string; className: string } {
     return { label: 'Sem itens', className: 'bg-slate-50 text-slate-500' }
   }
   if (!venda.notas_fiscais || venda.notas_fiscais.length === 0) {
-    return { label: 'Nota pendente', className: 'bg-amber-50 text-amber-700' }
+    // Reunião de 05/10 [00:00]: sem repetir "Nota" — a coluna já diz o que é.
+    return { label: 'Pendente', className: 'bg-amber-50 text-amber-700' }
   }
 
   // SPEC-154 (2026-09-21): estende o status pra refletir `status_emissao`
@@ -221,8 +222,8 @@ function statusNota(venda: Venda): { label: string; className: string } {
     (item) => jaFaturado(item, venda.notas_fiscais) >= Number(item.quantidade) - 1e-6,
   )
   return completa
-    ? { label: 'Nota completa', className: 'bg-emerald-50 text-emerald-700' }
-    : { label: 'Nota parcial', className: 'bg-sky-50 text-sky-700' }
+    ? { label: 'Emitida', className: 'bg-emerald-50 text-emerald-700' }
+    : { label: 'Parcial', className: 'bg-sky-50 text-sky-700' }
 }
 
 // SPEC-154 (2026-09-21): resultado normalizado do passo "Confirmar e Emitir
@@ -694,7 +695,8 @@ export default function Vendas() {
   }, [vendas, busca, empresaFiltro])
 
   return (
-    <div className="flex flex-col gap-6 animate-fade-in pb-20 w-full max-w-7xl mx-auto">
+    // Reunião de 05/10 [00:47]: a lista ocupa a tela de ponta a ponta.
+    <div className="flex flex-col gap-6 animate-fade-in pb-20 w-full">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div className="flex items-center gap-3">
           <div className="h-12 w-12 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600">
@@ -735,12 +737,14 @@ export default function Vendas() {
         </Select>
       </div>
 
-      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-        <Table>
+      {/* Reunião de 05/10 [00:28]–[01:10]: uma linha por venda (texto longo
+          cortado com "…", completo ao passar o mouse), letra um pouco menor e sem
+          a coluna do orçamento — fica só o número da venda. */}
+      <div className="bg-white rounded-xl border shadow-sm overflow-x-auto">
+        <Table className="text-[13px] [&_td]:whitespace-nowrap [&_td]:py-2 [&_th]:whitespace-nowrap">
           <TableHeader>
             <TableRow className="bg-slate-50">
               <TableHead>Venda</TableHead>
-              <TableHead>Orçamento</TableHead>
               <TableHead>Empresa Faturada</TableHead>
               <TableHead>Cliente</TableHead>
               <TableHead>Projeto</TableHead>
@@ -752,13 +756,13 @@ export default function Vendas() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={8} className="text-center py-8">
+                <TableCell colSpan={7} className="text-center py-8">
                   Carregando...
                 </TableCell>
               </TableRow>
             ) : vendasFiltradas.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                   {vendas.length === 0
                     ? 'Nenhuma venda (orçamento aprovado) encontrada.'
                     : 'Nenhuma venda encontrada com essa busca/empresa.'}
@@ -772,12 +776,21 @@ export default function Vendas() {
                     <TableCell className="font-mono font-medium">
                       {semPrefixo(venda.numero_venda) || '-'}
                     </TableCell>
-                    <TableCell className="font-mono text-xs text-slate-600">
-                      {semPrefixo(venda.numero) || '-'}
+                    <TableCell>{venda.empresa?.nome || '-'}</TableCell>
+                    <TableCell
+                      className="max-w-[320px] truncate"
+                      title={venda.cliente?.nome || undefined}
+                    >
+                      {venda.cliente?.nome || '-'}
                     </TableCell>
-                    <TableCell className="text-sm">{venda.empresa?.nome || '-'}</TableCell>
-                    <TableCell>{venda.cliente?.nome || '-'}</TableCell>
-                    <TableCell className="text-xs text-slate-600">
+                    <TableCell
+                      className="max-w-[300px] truncate text-slate-600"
+                      title={
+                        venda.projeto?.codigo
+                          ? `${venda.projeto.codigo} — ${venda.projeto.nome}`
+                          : venda.projeto?.nome || undefined
+                      }
+                    >
                       {venda.projeto?.codigo
                         ? `${venda.projeto.codigo} — ${venda.projeto.nome}`
                         : venda.projeto?.nome || '-'}
@@ -797,7 +810,7 @@ export default function Vendas() {
                         className="gap-1.5"
                         onClick={() => abrirModalNf(venda)}
                         disabled={
-                          status.label === 'Nota completa' ||
+                          status.label === 'Emitida' ||
                           status.label === 'Sem itens' ||
                           status.label === 'Processando emissão'
                         }
