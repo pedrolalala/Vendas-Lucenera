@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { semPrefixo } from '@/lib/numeros'
 import { useSearchParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase/client'
 import { redirectWithCode } from '@/lib/cross-system-auth'
@@ -769,10 +770,10 @@ export default function Vendas() {
                 return (
                   <TableRow key={venda.id}>
                     <TableCell className="font-mono font-medium">
-                      {venda.numero_venda || '-'}
+                      {semPrefixo(venda.numero_venda) || '-'}
                     </TableCell>
                     <TableCell className="font-mono text-xs text-slate-600">
-                      {venda.numero || '-'}
+                      {semPrefixo(venda.numero) || '-'}
                     </TableCell>
                     <TableCell className="text-sm">{venda.empresa?.nome || '-'}</TableCell>
                     <TableCell>{venda.cliente?.nome || '-'}</TableCell>
@@ -843,8 +844,8 @@ export default function Vendas() {
               <DialogHeader>
                 <DialogTitle>Espelho da Nota Fiscal</DialogTitle>
                 <DialogDescription>
-                  Venda {vendaAtual?.numero_venda} · {vendaAtual?.cliente?.nome || 'Sem cliente'} —
-                  revise o que já foi faturado em notas anteriores antes de emitir uma nova.
+                  Venda {semPrefixo(vendaAtual?.numero_venda)} ·{' '}
+                  {vendaAtual?.cliente?.nome || 'Sem cliente'} — revise o que já foi faturado em notas anteriores antes de emitir uma nova.
                 </DialogDescription>
               </DialogHeader>
 
@@ -927,7 +928,8 @@ export default function Vendas() {
               <DialogHeader>
                 <DialogTitle>Emitir Nota Fiscal</DialogTitle>
                 <DialogDescription>
-                  Venda {vendaAtual?.numero_venda} · {vendaAtual?.cliente?.nome || 'Sem cliente'} ·
+                  Venda {semPrefixo(vendaAtual?.numero_venda)} ·{' '}
+                  {vendaAtual?.cliente?.nome || 'Sem cliente'} ·{' '}
                   Preencha os dados do rascunho — a emissão real via Focus NFe (SPEC-154) é
                   confirmada no próximo passo.
                 </DialogDescription>
@@ -1141,8 +1143,8 @@ export default function Vendas() {
               <DialogHeader>
                 <DialogTitle>Emissão via Focus NFe</DialogTitle>
                 <DialogDescription>
-                  Venda {vendaAtual?.numero_venda} · {vendaAtual?.cliente?.nome || 'Sem cliente'} —
-                  nota registrada como rascunho, ainda não transmitida à SEFAZ.
+                  Venda {semPrefixo(vendaAtual?.numero_venda)} ·{' '}
+                  {vendaAtual?.cliente?.nome || 'Sem cliente'} — nota registrada como rascunho, ainda não transmitida à SEFAZ.
                 </DialogDescription>
               </DialogHeader>
 

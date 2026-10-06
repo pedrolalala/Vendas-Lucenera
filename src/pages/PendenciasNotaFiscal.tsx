@@ -6,6 +6,7 @@
 // por ação manual do frontend (nunca "esconder" um erro sem ele ter sido
 // realmente corrigido, regra 4/8 do briefing da SPEC-154).
 import { useEffect, useState } from 'react'
+import { semPrefixo } from '@/lib/numeros'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase/client'
 import {
@@ -141,7 +142,7 @@ export default function PendenciasNotaFiscal() {
               pendencias.map((p) => (
                 <TableRow key={p.id}>
                   <TableCell className="font-mono font-medium">
-                    {p.nota_fiscal?.orcamento?.numero_venda || '-'}
+                    {semPrefixo(p.nota_fiscal?.orcamento?.numero_venda) || '-'}
                   </TableCell>
                   <TableCell className="font-mono text-xs text-slate-600">{p.ref}</TableCell>
                   <TableCell className="text-center">{p.numero_tentativa}</TableCell>
