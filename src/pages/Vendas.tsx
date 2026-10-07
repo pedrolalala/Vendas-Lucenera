@@ -858,7 +858,8 @@ export default function Vendas() {
                 <DialogTitle>Espelho da Nota Fiscal</DialogTitle>
                 <DialogDescription>
                   Venda {semPrefixo(vendaAtual?.numero_venda)} ·{' '}
-                  {vendaAtual?.cliente?.nome || 'Sem cliente'} — revise o que já foi faturado em notas anteriores antes de emitir uma nova.
+                  {vendaAtual?.cliente?.nome || 'Sem cliente'} — revise o que já foi faturado em
+                  notas anteriores antes de emitir uma nova.
                 </DialogDescription>
               </DialogHeader>
 
@@ -889,7 +890,8 @@ export default function Vendas() {
                                     'bg-blue-50 text-blue-700',
                                   nf.status_emissao === 'erro_autorizacao' &&
                                     'bg-red-50 text-red-700',
-                                  nf.status_emissao === 'cancelado' && 'bg-slate-100 text-slate-600',
+                                  nf.status_emissao === 'cancelado' &&
+                                    'bg-slate-100 text-slate-600',
                                 )}
                               >
                                 {nf.status_emissao === 'autorizado' && 'Autorizado'}
@@ -942,9 +944,8 @@ export default function Vendas() {
                 <DialogTitle>Emitir Nota Fiscal</DialogTitle>
                 <DialogDescription>
                   Venda {semPrefixo(vendaAtual?.numero_venda)} ·{' '}
-                  {vendaAtual?.cliente?.nome || 'Sem cliente'} ·{' '}
-                  Preencha os dados do rascunho — a emissão real via Focus NFe (SPEC-154) é
-                  confirmada no próximo passo.
+                  {vendaAtual?.cliente?.nome || 'Sem cliente'} · Preencha os dados do rascunho — a
+                  emissão real via Focus NFe (SPEC-154) é confirmada no próximo passo.
                 </DialogDescription>
               </DialogHeader>
 
@@ -1157,7 +1158,8 @@ export default function Vendas() {
                 <DialogTitle>Emissão via Focus NFe</DialogTitle>
                 <DialogDescription>
                   Venda {semPrefixo(vendaAtual?.numero_venda)} ·{' '}
-                  {vendaAtual?.cliente?.nome || 'Sem cliente'} — nota registrada como rascunho, ainda não transmitida à SEFAZ.
+                  {vendaAtual?.cliente?.nome || 'Sem cliente'} — nota registrada como rascunho,
+                  ainda não transmitida à SEFAZ.
                 </DialogDescription>
               </DialogHeader>
 
@@ -1185,10 +1187,10 @@ export default function Vendas() {
                     <div>
                       <p className="font-semibold">Processando autorização...</p>
                       <p>
-                        A Focus NFe está processando a nota{resultadoEmissao.ref ? ` (ref ${resultadoEmissao.ref})` : ''}.
-                        O status final chega automaticamente por webhook (ou pelo job de
-                        verificação, em até 10 minutos) — pode fechar esta janela e acompanhar pela
-                        listagem principal.
+                        A Focus NFe está processando a nota
+                        {resultadoEmissao.ref ? ` (ref ${resultadoEmissao.ref})` : ''}. O status
+                        final chega automaticamente por webhook (ou pelo job de verificação, em até
+                        10 minutos) — pode fechar esta janela e acompanhar pela listagem principal.
                       </p>
                     </div>
                   </div>
@@ -1241,7 +1243,9 @@ export default function Vendas() {
                     </div>
                     <ul className="list-disc pl-6 space-y-1">
                       {resultadoEmissao.erros.length === 0 ? (
-                        <li>Erro de validação sem detalhamento — ver "Pendências de Nota Fiscal".</li>
+                        <li>
+                          Erro de validação sem detalhamento — ver "Pendências de Nota Fiscal".
+                        </li>
                       ) : (
                         resultadoEmissao.erros.map((e, i) => (
                           <li key={i}>
