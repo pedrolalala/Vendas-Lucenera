@@ -301,6 +301,8 @@ export default function Vendas() {
       )
       .eq('status', 'Orçamento Aprovado')
       .eq('natureza_operacao', 'venda')
+      // SPEC-195: venda vinculada da Connect já tem nota emitida lá — não entra aqui.
+      .eq('vinculo_connect', false)
       .order('numero_venda', { ascending: false })
 
     if (error) {
