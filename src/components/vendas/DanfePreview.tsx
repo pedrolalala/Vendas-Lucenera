@@ -246,7 +246,7 @@ export function DanfePreview({ venda, itensDisponiveis, numeroNf, serie }: Danfe
               itensDisponiveis.map(({ item, disponivel, unitario }) => {
                 const completo = disponivel <= 0
                 const produto = item.produto
-                const codigo = produto?.referencia || produto?.sku || produto?.codigo_produto || '-'
+                const codigo = produto?.referencia || produto?.codigo_produto || '-'
                 // Heurística provisória (não trata operação interestadual) —
                 // ver comentário em src/lib/danfe.ts.
                 const cfop = cfopHeuristico(produto?.tem_st ? 1 : 0)

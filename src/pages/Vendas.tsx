@@ -60,7 +60,6 @@ const FINANCEIRO_URL = 'https://retorno-bancario-bradesco-5392a.goskip.app'
 export interface ProdutoFiscal {
   id: string
   nome: string | null
-  sku: string | null
   codigo_produto: number | null
   referencia: string | null
   ncm: string | null
@@ -296,7 +295,7 @@ export default function Vendas() {
         empresa:empresas(id, nome, razao_social, cnpj, inscricao_estadual, logradouro, numero, complemento, bairro, cidade, estado, cep, regime_tributario),
         cliente:contatos!orcamentos_cliente_id_fkey(id, nome, razao_social, cpf_cnpj, cnpj, cpf, inscricao_estadual, endereco, numero, bairro, cidade, estado, cep, telefone),
         projeto:projetos(nome, codigo),
-        orcamento_itens(id, quantidade, preco_unitario, desconto, descricao, produto:produtos(id, nome, sku, codigo_produto, referencia, ncm, cst, unidade, tem_st)),
+        orcamento_itens(id, quantidade, preco_unitario, desconto, descricao, produto:produtos(id, nome, codigo_produto, referencia, ncm, cst, unidade, tem_st)),
         notas_fiscais(id, numero_nf, valor, data_emissao, cliente_id, nome_destinatario, status_emissao, status_sefaz, mensagem_sefaz, chave_nfe, arquivo_url, ref, created_at, notas_fiscais_itens(id, orcamento_item_id, quantidade_faturada, valor_faturado))
       `,
       )
