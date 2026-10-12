@@ -55,7 +55,8 @@ const FINANCEIRO_URL = 'https://retorno-bancario-bradesco-5392a.goskip.app'
 
 // SPEC-153 (2026-09-17): dados fiscais do produto usados só no espelho
 // (DANFE visual) -- NCM/CST confirmados em `produtos` (SPEC-132),
-// `porc_st` usado na heurística provisória de CFOP (ver DanfePreview.tsx).
+// `tem_st` usado na heurística provisória de CFOP (ver DanfePreview.tsx). SPEC-193 C2: o % de ST
+// é só da Administração; o espelho só precisa saber se a peça tem ST.
 export interface ProdutoFiscal {
   id: string
   nome: string | null
@@ -65,7 +66,7 @@ export interface ProdutoFiscal {
   ncm: string | null
   cst: string | null
   unidade: string | null
-  porc_st: number | null
+  tem_st: boolean | null
 }
 
 export interface OrcamentoItem {
@@ -295,7 +296,7 @@ export default function Vendas() {
         empresa:empresas(id, nome, razao_social, cnpj, inscricao_estadual, logradouro, numero, complemento, bairro, cidade, estado, cep, regime_tributario),
         cliente:contatos!orcamentos_cliente_id_fkey(id, nome, razao_social, cpf_cnpj, cnpj, cpf, inscricao_estadual, endereco, numero, bairro, cidade, estado, cep, telefone),
         projeto:projetos(nome, codigo),
-        orcamento_itens(id, quantidade, preco_unitario, desconto, descricao, produto:produtos(id, nome, sku, codigo_produto, referencia, ncm, cst, unidade, porc_st)),
+        orcamento_itens(id, quantidade, preco_unitario, desconto, descricao, produto:produtos(id, nome, sku, codigo_produto, referencia, ncm, cst, unidade, tem_st)),
         notas_fiscais(id, numero_nf, valor, data_emissao, cliente_id, nome_destinatario, status_emissao, status_sefaz, mensagem_sefaz, chave_nfe, arquivo_url, ref, created_at, notas_fiscais_itens(id, orcamento_item_id, quantidade_faturada, valor_faturado))
       `,
       )

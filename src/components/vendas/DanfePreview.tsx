@@ -249,7 +249,7 @@ export function DanfePreview({ venda, itensDisponiveis, numeroNf, serie }: Danfe
                 const codigo = produto?.referencia || produto?.sku || produto?.codigo_produto || '-'
                 // Heurística provisória (não trata operação interestadual) —
                 // ver comentário em src/lib/danfe.ts.
-                const cfop = cfopHeuristico(produto?.porc_st)
+                const cfop = cfopHeuristico(produto?.tem_st ? 1 : 0)
                 return (
                   <tr
                     key={item.id}
