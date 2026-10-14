@@ -49,7 +49,7 @@ export default function Layout() {
         </div>
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="icon" asChild title="Voltar para a Central Lucenera">
-            <a href="https://central-lucenera-dashboard-1c9ba.goskip.app/dashboard">
+            <a href="https://central-lucenera.pages.dev/dashboard">
               <Building2 className="h-4 w-4" />
             </a>
           </Button>

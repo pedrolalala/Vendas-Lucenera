@@ -51,7 +51,7 @@ import { DanfePreview } from '@/components/vendas/DanfePreview'
 // SPEC-153: Financeiro/Admin Bancária continua sendo o dono real de
 // boletos — Vendas só navega até lá (os boletos já nasceram na aprovação do
 // orçamento, `aprovar_orcamento_financeiro`, com status='pendente_registro').
-const FINANCEIRO_URL = 'https://retorno-bancario-bradesco-5392a.goskip.app'
+const FINANCEIRO_URL = 'https://adm-bancaria-lucenera.pages.dev'
 
 // SPEC-153 (2026-09-17): dados fiscais do produto usados só no espelho
 // (DANFE visual) -- NCM/CST confirmados em `produtos` (SPEC-132),
