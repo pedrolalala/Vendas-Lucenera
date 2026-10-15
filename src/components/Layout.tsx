@@ -1,5 +1,5 @@
 import { Outlet, NavLink } from 'react-router-dom'
-import { Building2, LogOut, AlertTriangle } from 'lucide-react'
+import { Building2, LogOut, AlertTriangle, FileText } from 'lucide-react'
 import logoUrl from '@/assets/logotipo-verticalv1preto-b4de9.png'
 import { useAuth } from '@/hooks/use-auth'
 import { Button } from '@/components/ui/button'
@@ -10,7 +10,8 @@ import { SystemSwitcher } from '@/components/SystemSwitcher'
 // fixo com logo/voltar-pra-Central/sair + SystemSwitcher). O sistema Vendas
 // nasce com uma única tela real ("Vendas") -- SPEC-154 (2026-09-21) adiciona
 // a segunda tela ("Pendências de Nota Fiscal"), então o header ganha um nav
-// simples de 2 links em vez de sidebar cheia.
+// simples de links em vez de sidebar cheia. SPEC-204 (2026-10-15): terceira tela,
+// "Notas Fiscais Connect" (consulta das notas importadas dos XMLs da Connect).
 export default function Layout() {
   const { signOut } = useAuth()
 
@@ -44,6 +45,17 @@ export default function Layout() {
               }
             >
               <AlertTriangle className="h-3.5 w-3.5" /> Pendências de Nota Fiscal
+            </NavLink>
+            <NavLink
+              to="/notas-fiscais-connect"
+              className={({ isActive }) =>
+                cn(
+                  'px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5',
+                  isActive ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-100',
+                )
+              }
+            >
+              <FileText className="h-3.5 w-3.5" /> Notas Fiscais Connect
             </NavLink>
           </nav>
         </div>
