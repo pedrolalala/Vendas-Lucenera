@@ -138,6 +138,13 @@ const nomeMes = (mes: string) => {
   return `${nome.charAt(0).toUpperCase()}${nome.slice(1)} de ${ano}`
 }
 
+// Remessa (natureza "REMESSA...", ex.: envio para industrialização/transporte) não é venda: não soma no total.
+const ehRemessa = (n: { natureza_operacao: string | null }) =>
+  /REMESSA/i.test(n.natureza_operacao || '')
+
+// Só soma no total a nota de venda autorizada — remessa e cancelada ficam de fora.
+const somaNoTotal = (n: NotaConnect) => n.situacao === 'autorizada' && !ehRemessa(n)
+
 const semAcento = (s: string) =>
   s
     .normalize('NFD')
@@ -222,9 +229,10 @@ export default function NotasFiscaisConnect() {
     })
   }, [notas, empresa, mes, situacao, busca])
 
-  const autorizadas = filtradas.filter((n) => n.situacao === 'autorizada')
-  const valorAutorizado = autorizadas.reduce((s, n) => s + (Number(n.valor_total) || 0), 0)
-  const canceladas = filtradas.length - autorizadas.length
+  const vendas = filtradas.filter(somaNoTotal)
+  const valorVendas = vendas.reduce((s, n) => s + (Number(n.valor_total) || 0), 0)
+  const remessas = filtradas.filter((n) => n.situacao === 'autorizada' && ehRemessa(n)).length
+  const canceladas = filtradas.filter((n) => n.situacao === 'cancelada').length
 
   return (
     <div className="flex flex-col gap-6 animate-fade-in pb-20 w-full max-w-7xl mx-auto">
@@ -242,18 +250,24 @@ export default function NotasFiscaisConnect() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white rounded-xl border shadow-sm p-4">
-          <div className="text-sm text-muted-foreground">Notas autorizadas</div>
-          <div className="text-2xl font-bold">{loading ? '—' : autorizadas.length}</div>
+          <div className="text-sm text-muted-foreground">Notas de venda</div>
+          <div className="text-2xl font-bold">{loading ? '—' : vendas.length}</div>
         </div>
         <div className="bg-white rounded-xl border shadow-sm p-4">
-          <div className="text-sm text-muted-foreground">Valor das autorizadas</div>
-          <div className="text-2xl font-bold">{loading ? '—' : moeda(valorAutorizado)}</div>
+          <div className="text-sm text-muted-foreground">Valor das vendas</div>
+          <div className="text-2xl font-bold">{loading ? '—' : moeda(valorVendas)}</div>
+        </div>
+        <div className="bg-white rounded-xl border shadow-sm p-4">
+          <div className="text-sm text-muted-foreground">Remessas</div>
+          <div className="text-2xl font-bold">{loading ? '—' : remessas}</div>
+          <div className="text-xs text-muted-foreground">não somam no valor</div>
         </div>
         <div className="bg-white rounded-xl border shadow-sm p-4">
           <div className="text-sm text-muted-foreground">Canceladas</div>
           <div className="text-2xl font-bold">{loading ? '—' : canceladas}</div>
+          <div className="text-xs text-muted-foreground">não somam no valor</div>
         </div>
       </div>
 
@@ -358,8 +372,11 @@ export default function NotasFiscaisConnect() {
                       className={
                         n.situacao === 'cancelada'
                           ? 'text-right font-medium line-through text-muted-foreground'
-                          : 'text-right font-medium'
+                          : ehRemessa(n)
+                            ? 'text-right text-muted-foreground'
+                            : 'text-right font-medium'
                       }
+                      title={somaNoTotal(n) ? undefined : 'Não soma no valor das vendas'}
                     >
                       {moeda(n.valor_total)}
                     </TableCell>
@@ -372,6 +389,11 @@ export default function NotasFiscaisConnect() {
                         ) : (
                           <Badge variant="outline" className="bg-emerald-50 text-emerald-700">
                             Autorizada
+                          </Badge>
+                        )}
+                        {ehRemessa(n) && (
+                          <Badge variant="outline" className="bg-slate-100 text-slate-600">
+                            Remessa · não soma
                           </Badge>
                         )}
                         {cartas > 0 && (
