@@ -138,12 +138,13 @@ const nomeMes = (mes: string) => {
   return `${nome.charAt(0).toUpperCase()}${nome.slice(1)} de ${ano}`
 }
 
-// Remessa (natureza "REMESSA...", ex.: envio para industrialização/transporte) não é venda: não soma no total.
-const ehRemessa = (n: { natureza_operacao: string | null }) =>
-  /REMESSA/i.test(n.natureza_operacao || '')
+// Só soma no valor a nota de VENDA autorizada (decisão do usuário, 15/10/2026). Venda = CFOP de venda
+// (5101–5123, 5401–5405 e os 6xxx equivalentes). Remessa, devolução, retorno, industrialização,
+// bonificação... aparecem na lista, mas não somam. 5411 (devolução de compra) fica de fora.
+const ehVenda = (n: { cfop_principal: string | null }) =>
+  /^[56](10[1-9]|11\d|12[0-3]|40[1-5])$/.test(n.cfop_principal || '')
 
-// Só soma no total a nota de venda autorizada — remessa e cancelada ficam de fora.
-const somaNoTotal = (n: NotaConnect) => n.situacao === 'autorizada' && !ehRemessa(n)
+const somaNoTotal = (n: NotaConnect) => n.situacao === 'autorizada' && ehVenda(n)
 
 const semAcento = (s: string) =>
   s
@@ -231,7 +232,7 @@ export default function NotasFiscaisConnect() {
 
   const vendas = filtradas.filter(somaNoTotal)
   const valorVendas = vendas.reduce((s, n) => s + (Number(n.valor_total) || 0), 0)
-  const remessas = filtradas.filter((n) => n.situacao === 'autorizada' && ehRemessa(n)).length
+  const outras = filtradas.filter((n) => n.situacao === 'autorizada' && !ehVenda(n)).length
   const canceladas = filtradas.filter((n) => n.situacao === 'cancelada').length
 
   return (
@@ -260,9 +261,11 @@ export default function NotasFiscaisConnect() {
           <div className="text-2xl font-bold">{loading ? '—' : moeda(valorVendas)}</div>
         </div>
         <div className="bg-white rounded-xl border shadow-sm p-4">
-          <div className="text-sm text-muted-foreground">Remessas</div>
-          <div className="text-2xl font-bold">{loading ? '—' : remessas}</div>
-          <div className="text-xs text-muted-foreground">não somam no valor</div>
+          <div className="text-sm text-muted-foreground">Outras operações</div>
+          <div className="text-2xl font-bold">{loading ? '—' : outras}</div>
+          <div className="text-xs text-muted-foreground">
+            remessa, devolução, retorno... não somam
+          </div>
         </div>
         <div className="bg-white rounded-xl border shadow-sm p-4">
           <div className="text-sm text-muted-foreground">Canceladas</div>
@@ -372,7 +375,7 @@ export default function NotasFiscaisConnect() {
                       className={
                         n.situacao === 'cancelada'
                           ? 'text-right font-medium line-through text-muted-foreground'
-                          : ehRemessa(n)
+                          : !ehVenda(n)
                             ? 'text-right text-muted-foreground'
                             : 'text-right font-medium'
                       }
@@ -391,9 +394,9 @@ export default function NotasFiscaisConnect() {
                             Autorizada
                           </Badge>
                         )}
-                        {ehRemessa(n) && (
+                        {n.situacao === 'autorizada' && !ehVenda(n) && (
                           <Badge variant="outline" className="bg-slate-100 text-slate-600">
-                            Remessa · não soma
+                            Não é venda · não soma
                           </Badge>
                         )}
                         {cartas > 0 && (
