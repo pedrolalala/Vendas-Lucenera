@@ -51,7 +51,8 @@ import { DanfePreview } from '@/components/vendas/DanfePreview'
 // SPEC-153: Financeiro/Admin Bancária continua sendo o dono real de
 // boletos — Vendas só navega até lá (os boletos já nasceram na aprovação do
 // orçamento, `aprovar_orcamento_financeiro`, com status='pendente_registro').
-const FINANCEIRO_URL = 'https://adm-bancaria-lucenera.pages.dev'
+// SPEC-225: boletos/recebimento ficam no sistema Contas a Receber.
+const FINANCEIRO_URL = 'https://contas-receber-lucenera.pages.dev'
 
 // SPEC-153 (2026-09-17): dados fiscais do produto usados só no espelho
 // (DANFE visual) -- NCM/CST confirmados em `produtos` (SPEC-132),
@@ -664,7 +665,7 @@ export default function Vendas() {
   const verBoletos = async (venda: Venda) => {
     const route = `/boletos?orcamento_id=${venda.id}`
     try {
-      await redirectWithCode(FINANCEIRO_URL, route, 'financeiro', { newTab: true })
+      await redirectWithCode(FINANCEIRO_URL, route, 'contas-receber', { newTab: true })
     } catch {
       window.open(`${FINANCEIRO_URL}${route}`, '_blank', 'noopener,noreferrer')
     }
