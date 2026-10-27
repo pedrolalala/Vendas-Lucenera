@@ -21,7 +21,7 @@
 // escolha de default de integração, sempre a mesma e sempre visível no
 // `payload_enviado` gravado).
 
-import { cfopHeuristico } from './cfop.ts'
+import { cfopDevolucao, cfopHeuristico } from './cfop.ts'
 
 export interface EmpresaEmitenteDados {
   nome: string
@@ -89,6 +89,10 @@ export interface MontarPayloadInput {
   formaPagamento?: string | null
   /** SPEC-231 F3: o que o faturamento ajustou nesta nota (nulo = cadastro/orçamento). */
   ajustes?: AjustesNota | null
+  /** SPEC-231 F1: venda (padrão) ou devolução de venda (só documento fiscal, referencia a NF original). */
+  tipoNota?: 'venda' | 'devolucao'
+  /** SPEC-231 F1: chave (44 dígitos) da NF de venda original, obrigatória na devolução. */
+  chaveReferenciada?: string | null
 }
 
 export interface AjustesNota {
@@ -197,6 +201,14 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
     bloqueantes.push('Nenhum item informado para a nota fiscal.')
   }
 
+  const ehDevolucao = input.tipoNota === 'devolucao'
+  const chaveReferenciada = soDigitos(input.chaveReferenciada)
+  if (ehDevolucao && chaveReferenciada.length !== 44) {
+    bloqueantes.push(
+      'Nota de devolução precisa da chave (44 dígitos) da NF de venda original — informe na tela de emissão.',
+    )
+  }
+
   const crt = crtDoRegime(input.empresa.regime_tributario)
   if (!crt) {
     bloqueantes.push(
@@ -243,7 +255,7 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
     const unidade = produto?.unidade || 'UN'
     // CFOP: heurística provisória compartilhada com o espelho DANFE -- ver
     // _shared/cfop.ts (Gap de CFOP, pendência aberta na SPEC-154).
-    const cfop = cfopHeuristico(produto?.porc_st)
+    const cfop = ehDevolucao ? cfopDevolucao(produto?.porc_st) : cfopHeuristico(produto?.porc_st)
 
     return {
       numero_item: numeroItem,
@@ -308,6 +320,9 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
   avisos.push(
     'PIS/COFINS e IBS/CBS pendentes de definição do contador (SPEC-165): PIS/COFINS vão como 99; grupo IBS/CBS não enviado.',
   )
+  if (ehDevolucao) {
+    avisos.push('Nota de devolução: CFOP 1202/1411, entrada, finalidade 4, sem pagamento — validar com o contador (SPEC-231 F1).')
+  }
   avisos.push(
     `presenca_comprador default "9" (não presencial, outros) -- venda não registra esse dado ainda.`,
     `indicador_ie_destinatario "${indicadorIe}" (IE ${ieIsento ? 'ISENTO' : ieDestinatario ? 'informada' : 'não informada'}).`,
@@ -331,10 +346,12 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
   // pra validar que o cadastro Lucenera está completo antes de emitir
   // (bloqueantes), não pra montar o payload.
   const payload: Record<string, unknown> = {
-    natureza_operacao: 'Venda',
+    // SPEC-231 F1: devolução = nota de entrada, finalidade 4, referenciando a NF de venda original
+    natureza_operacao: ehDevolucao ? 'Devolução de venda' : 'Venda',
     data_emissao: agoraIsoSaoPaulo(),
-    tipo_documento: 1, // saída
-    finalidade_emissao: '1', // NF-e normal
+    tipo_documento: ehDevolucao ? 0 : 1, // 0 entrada, 1 saída
+    finalidade_emissao: ehDevolucao ? '4' : '1', // 4 devolução, 1 normal
+    ...(ehDevolucao ? { notas_referenciadas: [{ chave_nfe: chaveReferenciada }] } : {}),
     presenca_comprador: '9',
     modalidade_frete: modalidadeFrete,
     // SPEC-231 F3: transportadora e dados adicionais digitados na emissão
@@ -348,7 +365,10 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
     regime_tributario_emitente: crt,
     local_destino: interestadual ? 2 : 1,
     consumidor_final: consumidorFinal,
-    formas_pagamento: [{ forma_pagamento: tPag, valor_pagamento: valorNota }],
+    // devolução não tem pagamento (o crédito é do orçamento de Devolução)
+    formas_pagamento: ehDevolucao
+      ? [{ forma_pagamento: '90', valor_pagamento: 0 }]
+      : [{ forma_pagamento: tPag, valor_pagamento: valorNota }],
 
     // CNPJ tem 14 dígitos, CPF tem 11 -- é assim que a própria Focus espera
     // que a gente escolha entre os dois campos mutuamente exclusivos.

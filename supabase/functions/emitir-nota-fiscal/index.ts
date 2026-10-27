@@ -108,10 +108,10 @@ Deno.serve(async (req: Request) => {
         `
         id, ref, tentativa_atual, status_emissao, cliente_id, nome_destinatario, orcamento_id,
         dados_adicionais, modalidade_frete, transportadora_nome, transportadora_cnpj, valor_desconto,
-        destinatario_cpf_cnpj, destinatario_ie,
+        destinatario_cpf_cnpj, destinatario_ie, tipo_nota, chave_nfe_referenciada,
         cliente:contatos(id, nome, razao_social, cpf_cnpj, cnpj, cpf, inscricao_estadual, endereco, numero, bairro, cidade, estado, cep, telefone, email),
         orcamento:orcamentos(
-          id, numero_venda, frete_valor, frete_tipo, forma_pagamento, cliente_id, empresa_id,
+          id, numero, numero_venda, frete_valor, frete_tipo, forma_pagamento, cliente_id, empresa_id,
           empresa:empresas(nome, razao_social, cnpj, inscricao_estadual, logradouro, numero, complemento, bairro, cidade, estado, cep, regime_tributario, codigo_municipio_ibge),
           cliente:contatos!orcamentos_cliente_id_fkey(id, nome, razao_social, cpf_cnpj, cnpj, cpf, inscricao_estadual, endereco, numero, bairro, cidade, estado, cep, telefone, email)
         ),
@@ -182,7 +182,11 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const refAtual = `VENDA-${orcamento.numero_venda || orcamento.id}-N${tentativaFinal}`
+    // SPEC-231 F1: devolução não tem número de venda — ref pelo orçamento (DEV-ORC-0004-N1)
+    const refAtual =
+      nota.tipo_nota === 'devolucao'
+        ? `DEV-${orcamento.numero || orcamento.id}-N${tentativaFinal}`
+        : `VENDA-${orcamento.numero_venda || orcamento.id}-N${tentativaFinal}`
 
     const itens: ItemNotaDados[] = (nota.notas_fiscais_itens || []).map((nfi: any) => {
       const orcItem = Array.isArray(nfi.orcamento_item) ? nfi.orcamento_item[0] : nfi.orcamento_item
@@ -284,6 +288,8 @@ Deno.serve(async (req: Request) => {
         destinatarioDoc: nota.destinatario_cpf_cnpj ?? null,
         destinatarioIe: nota.destinatario_ie ?? null,
       },
+      tipoNota: nota.tipo_nota === 'devolucao' ? 'devolucao' : 'venda',
+      chaveReferenciada: nota.chave_nfe_referenciada ?? null,
     })
 
     // Pré-validação interna (nunca chegou a ir pra Focus) -- mesmo

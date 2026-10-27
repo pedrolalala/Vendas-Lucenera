@@ -157,6 +157,21 @@ export interface Venda {
   projeto: { nome: string; codigo: string | null } | null
   orcamento_itens: OrcamentoItem[]
   notas_fiscais: NotaFiscal[]
+  /** SPEC-231 F1: venda ou devolução (a devolução emite nota de devolução, só documento fiscal) */
+  natureza_operacao: 'venda' | 'devolucao'
+  /** SPEC-231 F1: na devolução, a venda original (venda_origem_id ou a venda dos itens devolvidos) */
+  origem: VendaOrigem | null
+}
+
+export interface VendaOrigem {
+  id: string
+  numero: string | null
+  numero_venda: string | null
+  empresa: string | null
+  projeto: string | null
+  cliente: string | null
+  /** chave da NF de venda autorizada (para referenciar na devolução) */
+  chave_nfe: string | null
 }
 
 interface Contato {
@@ -295,6 +310,7 @@ export default function Vendas() {
     transportadoraNome: '',
     transportadoraDoc: '',
     dadosAdicionais: '',
+    chaveReferenciada: '',
   })
 
   const fetchVendas = async () => {
@@ -303,16 +319,17 @@ export default function Vendas() {
       .from('orcamentos')
       .select(
         `
-        id, numero, numero_venda, valor_total, frete_valor, desconto_global,
+        id, numero, numero_venda, valor_total, frete_valor, desconto_global, natureza_operacao, venda_origem_id,
         empresa:empresas(id, nome, razao_social, cnpj, inscricao_estadual, logradouro, numero, complemento, bairro, cidade, estado, cep, regime_tributario),
         cliente:contatos!orcamentos_cliente_id_fkey(id, nome, razao_social, cpf_cnpj, cnpj, cpf, inscricao_estadual, endereco, numero, bairro, cidade, estado, cep, telefone),
         projeto:projetos(nome, codigo),
-        orcamento_itens(id, quantidade, preco_unitario, desconto, descricao, produto:produtos(id, nome, codigo_produto, referencia, ncm, cst, unidade, tem_st)),
+        orcamento_itens(id, quantidade, preco_unitario, desconto, descricao, produto:produtos(id, nome, codigo_produto, referencia, ncm, cst, unidade, tem_st), origem:projeto_itens!orcamento_itens_projeto_item_origem_id_fkey(orcamento_id)),
         notas_fiscais(id, numero_nf, valor, data_emissao, cliente_id, nome_destinatario, status_emissao, status_sefaz, mensagem_sefaz, chave_nfe, arquivo_url, ref, created_at, notas_fiscais_itens(id, orcamento_item_id, quantidade_faturada, valor_faturado))
       `,
       )
       .eq('status', 'Orçamento Aprovado')
-      .eq('natureza_operacao', 'venda')
+      // SPEC-231 F1: devolução aprovada também emite (nota de devolução)
+      .in('natureza_operacao', ['venda', 'devolucao'])
       // SPEC-195: venda vinculada da Connect já tem nota emitida lá — não entra aqui.
       .eq('vinculo_connect', false)
       .order('numero_venda', { ascending: false })
@@ -324,12 +341,48 @@ export default function Vendas() {
         description: error.message,
       })
     } else if (data) {
+      // SPEC-231 F1: venda original de cada devolução — venda_origem_id ou a venda dos itens devolvidos
+      const origemDe = (v: any): string | null =>
+        v.venda_origem_id ||
+        (v.orcamento_itens || [])
+          .map((i: any) => (Array.isArray(i.origem) ? i.origem[0] : i.origem)?.orcamento_id)
+          .find(Boolean) ||
+        null
+      const idsOrigem = Array.from(
+        new Set((data as any[]).filter((v) => v.natureza_operacao === 'devolucao').map(origemDe).filter(Boolean)),
+      ) as string[]
+      const origens = new Map<string, VendaOrigem>()
+      if (idsOrigem.length > 0) {
+        const { data: orig } = await supabase
+          .from('orcamentos')
+          .select(
+            'id, numero, numero_venda, empresa:empresas(nome), projeto:projetos(codigo, nome), cliente:contatos!orcamentos_cliente_id_fkey(nome), notas_fiscais(chave_nfe, status_emissao, tipo_nota)',
+          )
+          .in('id', idsOrigem)
+        for (const o of (orig as any[]) || []) {
+          const um = (x: any) => (Array.isArray(x) ? x[0] : x)
+          const proj = um(o.projeto)
+          const nfVenda = ((o.notas_fiscais as any[]) || []).find(
+            (n) => n.status_emissao === 'autorizado' && n.chave_nfe && n.tipo_nota !== 'devolucao',
+          )
+          origens.set(o.id, {
+            id: o.id,
+            numero: o.numero,
+            numero_venda: o.numero_venda,
+            empresa: um(o.empresa)?.nome ?? null,
+            projeto: proj ? [proj.codigo, proj.nome].filter(Boolean).join(' — ') : null,
+            cliente: um(o.cliente)?.nome ?? null,
+            chave_nfe: nfVenda?.chave_nfe ?? null,
+          })
+        }
+      }
       setVendas(
         (data as any[]).map((v) => ({
           ...v,
           empresa: Array.isArray(v.empresa) ? v.empresa[0] || null : v.empresa,
           cliente: Array.isArray(v.cliente) ? v.cliente[0] || null : v.cliente,
           projeto: Array.isArray(v.projeto) ? v.projeto[0] || null : v.projeto,
+          origem: v.natureza_operacao === 'devolucao' ? (origens.get(origemDe(v) ?? '') ?? null) : null,
           orcamento_itens: (v.orcamento_itens || []).map((item: any) => ({
             ...item,
             produto: Array.isArray(item.produto) ? item.produto[0] || null : item.produto,
@@ -387,6 +440,7 @@ export default function Vendas() {
     transportadoraNome: '',
     transportadoraDoc: '',
     dadosAdicionais: '',
+    chaveReferenciada: venda?.origem?.chave_nfe || '',
   })
 
   const abrirModalNf = (venda: Venda) => {
@@ -514,6 +568,7 @@ export default function Vendas() {
           transportadora_nome: ajustes.transportadoraNome,
           transportadora_cnpj: ajustes.transportadoraDoc,
           dados_adicionais: ajustes.dadosAdicionais,
+          chave_nfe_referenciada: ajustes.chaveReferenciada,
         },
       })
       if (erroAjustes) {
@@ -811,7 +866,21 @@ export default function Vendas() {
                 return (
                   <TableRow key={venda.id}>
                     <TableCell className="font-mono font-medium">
-                      {semPrefixo(venda.numero_venda) || '-'}
+                      {venda.natureza_operacao === 'devolucao' ? (
+                        <span className="flex flex-col gap-0.5">
+                          <span className="flex items-center gap-1">
+                            <Badge variant="outline" className="bg-amber-50 text-amber-800 text-[10px]">
+                              Devolução
+                            </Badge>
+                            {semPrefixo(venda.numero)}
+                          </span>
+                          <span className="text-[11px] font-normal text-muted-foreground">
+                            da venda {semPrefixo(venda.origem?.numero_venda ?? null) || '?'}
+                          </span>
+                        </span>
+                      ) : (
+                        semPrefixo(venda.numero_venda) || '-'
+                      )}
                     </TableCell>
                     <TableCell>{venda.empresa?.nome || '-'}</TableCell>
                     <TableCell
@@ -1001,6 +1070,82 @@ export default function Vendas() {
                     <span className="text-muted-foreground">Emitente:</span>{' '}
                     <span className="font-medium">{vendaAtual?.empresa?.nome || '-'}</span>
                   </div>
+                </div>
+
+                {/* SPEC-231 F1: tipo da nota — segue o orçamento (a devolução nasce no orçamento de Devolução,
+                    que já gerou o crédito do cliente e a volta das peças; esta nota é só o documento fiscal) */}
+                <div
+                  className={cn(
+                    'rounded-lg border p-4 space-y-2 text-sm',
+                    vendaAtual?.natureza_operacao === 'devolucao' && 'border-amber-300 bg-amber-50/60',
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    <Label className="text-sm font-semibold">Tipo da nota:</Label>
+                    {vendaAtual?.natureza_operacao === 'devolucao' ? (
+                      <Badge variant="outline" className="bg-amber-100 text-amber-900">
+                        Devolução de venda
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="bg-emerald-50 text-emerald-700">
+                        Venda
+                      </Badge>
+                    )}
+                  </div>
+                  {vendaAtual?.natureza_operacao === 'devolucao' ? (
+                    <>
+                      <p className="text-xs text-muted-foreground">
+                        O crédito do cliente e a volta das peças ao estoque já foram feitos na aprovação do
+                        orçamento de devolução — esta nota não mexe em estoque nem em financeiro.
+                      </p>
+                      {vendaAtual.origem ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
+                          <p>
+                            <span className="text-muted-foreground">Venda original:</span>{' '}
+                            <span className="font-semibold">
+                              {semPrefixo(vendaAtual.origem.numero_venda) || vendaAtual.origem.numero}
+                            </span>
+                          </p>
+                          <p>
+                            <span className="text-muted-foreground">Empresa:</span>{' '}
+                            {vendaAtual.origem.empresa || '-'}
+                          </p>
+                          <p>
+                            <span className="text-muted-foreground">Projeto:</span>{' '}
+                            {vendaAtual.origem.projeto || '-'}
+                          </p>
+                          <p>
+                            <span className="text-muted-foreground">Cliente:</span>{' '}
+                            {vendaAtual.origem.cliente || '-'}
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="text-xs font-semibold text-red-700">
+                          Não achei a venda original desta devolução — confira o orçamento de devolução.
+                        </p>
+                      )}
+                      <div className="space-y-1 pt-1">
+                        <Label>
+                          Chave da NF de venda original <span className="text-red-500">*</span>
+                        </Label>
+                        <Input
+                          placeholder="44 dígitos"
+                          value={ajustes.chaveReferenciada}
+                          onChange={(e) => setAjustes({ ...ajustes, chaveReferenciada: e.target.value })}
+                        />
+                        <p className="text-[11px] text-muted-foreground">
+                          {vendaAtual.origem?.chave_nfe
+                            ? 'Preenchida com a nota autorizada da venda original.'
+                            : 'A venda original não tem nota autorizada no sistema (ex.: emitida na Connect) — cole a chave da nota.'}
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Nota de faturamento. O valor a receber já existe desde a aprovação da venda e o estoque sai na
+                      entrega (Separação/Logística).
+                    </p>
+                  )}
                 </div>
 
                 {/* SPEC-231 F3: o que o faturamento pode mexer nesta nota */}

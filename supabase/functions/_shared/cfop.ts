@@ -17,3 +17,9 @@
 export function cfopHeuristico(porcSt: number | null | undefined): string {
   return (porcSt || 0) > 0 ? '5405' : '5102'
 }
+
+// SPEC-231 F1: nota de devolução de venda (entrada, dentro do estado). 1202 = devolução de venda de mercadoria
+// adquirida de terceiros; 1411 = idem com substituição tributária. Provisório como o de venda — validar com o contador.
+export function cfopDevolucao(porcSt: number | null | undefined): string {
+  return (porcSt || 0) > 0 ? '1411' : '1202'
+}

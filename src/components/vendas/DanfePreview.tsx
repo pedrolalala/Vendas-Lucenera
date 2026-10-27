@@ -10,7 +10,7 @@
 // "é o espelho, tipo, é a nota sem valor fiscal, ela não foi pra Cefaz ainda".
 import { useMemo } from 'react'
 import { cn } from '@/lib/utils'
-import { cfopHeuristico, formatarChaveAcesso, montarChaveAcessoPlaceholder } from '@/lib/danfe'
+import { cfopDevolucao, cfopHeuristico, formatarChaveAcesso, montarChaveAcessoPlaceholder } from '@/lib/danfe'
 import { CodigoBarras } from '@/components/vendas/CodigoBarras'
 import type { OrcamentoItem, Venda } from '@/pages/Vendas'
 import { formatCurrency } from '@/pages/Vendas'
@@ -131,7 +131,9 @@ export function DanfePreview({ venda, itensDisponiveis, numeroNf, serie }: Danfe
             Documento Auxiliar da Nota Fiscal Eletrônica
           </p>
           <p className="text-[9px] text-slate-600">0 - Entrada / 1 - Saída</p>
-          <p className="text-sm font-bold">1 - SAÍDA</p>
+          <p className="text-sm font-bold">
+            {venda.natureza_operacao === 'devolucao' ? '0 - ENTRADA' : '1 - SAÍDA'}
+          </p>
           <p className="text-[10px] mt-1">
             N° <span className="font-bold">{numeroNf || 'A definir'}</span> &nbsp; SÉRIE{' '}
             <span className="font-bold">{serie || '-'}</span>
@@ -151,7 +153,11 @@ export function DanfePreview({ venda, itensDisponiveis, numeroNf, serie }: Danfe
 
       {/* Banda 2: Natureza da Operação | Protocolo de Autorização */}
       <div className="grid grid-cols-2 border-b-2 border-slate-900 divide-x divide-slate-900">
-        <Field label="Natureza da Operação" value="Venda" />
+        {/* SPEC-231 F1: mesma natureza que vai para a Focus */}
+        <Field
+          label="Natureza da Operação"
+          value={venda.natureza_operacao === 'devolucao' ? 'Devolução de venda' : 'Venda'}
+        />
         <Field
           label="Protocolo de Autorização de Uso"
           value={<span className="text-red-600 font-bold">Não autorizado — sem valor fiscal</span>}
@@ -249,7 +255,10 @@ export function DanfePreview({ venda, itensDisponiveis, numeroNf, serie }: Danfe
                 const codigo = produto?.referencia || produto?.codigo_produto || '-'
                 // Heurística provisória (não trata operação interestadual) —
                 // ver comentário em src/lib/danfe.ts.
-                const cfop = cfopHeuristico(produto?.tem_st ? 1 : 0)
+                const cfop =
+                  venda.natureza_operacao === 'devolucao'
+                    ? cfopDevolucao(produto?.tem_st ? 1 : 0)
+                    : cfopHeuristico(produto?.tem_st ? 1 : 0)
                 return (
                   <tr
                     key={item.id}

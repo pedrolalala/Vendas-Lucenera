@@ -124,3 +124,8 @@ export function formatarChaveAcesso(chave: string): string {
 export function cfopHeuristico(porcSt: number | null | undefined): string {
   return (porcSt || 0) > 0 ? '5405' : '5102'
 }
+
+// SPEC-231 F1: devolução de venda (entrada, dentro do estado) — mesma regra de _shared/cfop.ts cfopDevolucao.
+export function cfopDevolucao(porcSt: number | null | undefined): string {
+  return (porcSt || 0) > 0 ? '1411' : '1202'
+}
