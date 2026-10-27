@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
@@ -285,6 +286,16 @@ export default function Vendas() {
   const [contatosEncontrados, setContatosEncontrados] = useState<Contato[]>([])
   const [contatoSelecionado, setContatoSelecionado] = useState<Contato | null>(null)
   const [nomeDestinatario, setNomeDestinatario] = useState('')
+  // SPEC-231 F3: o que o faturamento pode ajustar na nota (o resto vem do cadastro/venda)
+  const [ajustes, setAjustes] = useState({
+    destinatarioDoc: '',
+    destinatarioIe: '',
+    valorDesconto: '',
+    modalidadeFrete: '9',
+    transportadoraNome: '',
+    transportadoraDoc: '',
+    dadosAdicionais: '',
+  })
 
   const fetchVendas = async () => {
     setLoading(true)
@@ -367,6 +378,17 @@ export default function Vendas() {
     }
   }, [buscaContato, pagadorModo])
 
+  // SPEC-231 F3: começa com o que o cadastro do cliente da venda tem (dá para corrigir só nesta nota)
+  const ajustesDoCliente = (venda: Venda | null) => ({
+    destinatarioDoc: venda?.cliente?.cpf_cnpj || venda?.cliente?.cnpj || venda?.cliente?.cpf || '',
+    destinatarioIe: venda?.cliente?.inscricao_estadual || '',
+    valorDesconto: '',
+    modalidadeFrete: venda?.frete_valor ? '0' : '9',
+    transportadoraNome: '',
+    transportadoraDoc: '',
+    dadosAdicionais: '',
+  })
+
   const abrirModalNf = (venda: Venda) => {
     setVendaAtual(venda)
     const iniciais: Record<string, string> = {}
@@ -386,6 +408,7 @@ export default function Vendas() {
     setContatosEncontrados([])
     setContatoSelecionado(null)
     setNomeDestinatario('')
+    setAjustes(ajustesDoCliente(venda))
     setNfStep('preview')
     setNotaFiscalIdAtual(null)
     setResultadoEmissao(null)
@@ -441,10 +464,6 @@ export default function Vendas() {
 
   const handleRegistrar = async () => {
     if (!vendaAtual) return
-    if (!numeroNf.trim()) {
-      toast({ variant: 'destructive', title: 'Número da NF é obrigatório' })
-      return
-    }
     const itensPayload = itensDisponiveis
       .map(({ item, unitario }) => {
         const quantidade = Number(quantidades[item.id] || 0)
@@ -475,17 +494,32 @@ export default function Vendas() {
     try {
       const { data, error } = await (supabase as any).rpc('registrar_nota_fiscal_parcial', {
         p_orcamento_id: vendaAtual.id,
-        p_numero_nf: numeroNf.trim(),
+        // SPEC-231 F2: número, série e data vêm da SEFAZ/Focus na autorização
+        p_numero_nf: '',
         p_itens: itensPayload,
-        p_serie: serie || null,
-        p_data_emissao: dataEmissao || null,
         p_cliente_id: pagadorModo === 'cadastrado' ? contatoSelecionado?.id : null,
         p_nome_destinatario: pagadorModo === 'livre' ? nomeDestinatario.trim() : null,
-        p_tipo_operacao: tipoOperacao,
-        p_perfil: perfil || null,
-        p_fornecedor: fornecedor || null,
+        p_tipo_operacao: 'CR',
       })
       if (error) throw error
+
+      // SPEC-231 F3: dados ajustados na tela (CPF/IE, desconto, frete, transportadora, dados adicionais)
+      const { error: erroAjustes } = await (supabase as any).rpc('definir_dados_emissao_nota_fiscal', {
+        p_nota_fiscal_id: data?.nota_fiscal_id,
+        p_dados: {
+          destinatario_cpf_cnpj: ajustes.destinatarioDoc,
+          destinatario_ie: ajustes.destinatarioIe,
+          valor_desconto: ajustes.valorDesconto.replace(',', '.'),
+          modalidade_frete: ajustes.modalidadeFrete,
+          transportadora_nome: ajustes.transportadoraNome,
+          transportadora_cnpj: ajustes.transportadoraDoc,
+          dados_adicionais: ajustes.dadosAdicionais,
+        },
+      })
+      if (erroAjustes) {
+        await supabase.from('notas_fiscais').delete().eq('id', data?.nota_fiscal_id)
+        throw erroAjustes
+      }
 
       toast({ title: 'Nota fiscal registrada como rascunho' })
       // SPEC-154: não fecha mais o modal aqui -- a nota nasce como rascunho
@@ -947,58 +981,99 @@ export default function Vendas() {
                 <DialogTitle>Emitir Nota Fiscal</DialogTitle>
                 <DialogDescription>
                   Venda {semPrefixo(vendaAtual?.numero_venda)} ·{' '}
-                  {vendaAtual?.cliente?.nome || 'Sem cliente'} · Preencha os dados do rascunho — a
-                  emissão real via Focus NFe (SPEC-154) é confirmada no próximo passo.
+                  {vendaAtual?.cliente?.nome || 'Sem cliente'} · Os dados vêm da venda e do cadastro;
+                  ajuste só o que precisar. A emissão é confirmada no próximo passo.
                 </DialogDescription>
               </DialogHeader>
 
               <div className="space-y-6 py-2">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="space-y-2">
-                    <Label>
-                      Número da NF <span className="text-red-500">*</span>
-                    </Label>
-                    <Input value={numeroNf} onChange={(e) => setNumeroNf(e.target.value)} />
+                {/* SPEC-231 F2 (reunião 26/10): número, série e data não se digitam — vêm da SEFAZ/Focus */}
+                <div className="rounded-lg border bg-muted/30 px-4 py-3 text-sm grid grid-cols-1 md:grid-cols-3 gap-2">
+                  <div>
+                    <span className="text-muted-foreground">Número / série:</span>{' '}
+                    <span className="font-medium">automático (na autorização)</span>
                   </div>
-                  <div className="space-y-2">
-                    <Label>Série</Label>
-                    <Input value={serie} onChange={(e) => setSerie(e.target.value)} />
+                  <div>
+                    <span className="text-muted-foreground">Emissão:</span>{' '}
+                    <span className="font-medium">{new Date().toLocaleDateString('pt-BR')}</span>
                   </div>
-                  <div className="space-y-2">
-                    <Label>Data de Emissão</Label>
-                    <Input
-                      type="date"
-                      value={dataEmissao}
-                      onChange={(e) => setDataEmissao(e.target.value)}
-                    />
+                  <div>
+                    <span className="text-muted-foreground">Emitente:</span>{' '}
+                    <span className="font-medium">{vendaAtual?.empresa?.nome || '-'}</span>
                   </div>
-                  <div className="space-y-2">
-                    <Label>Tipo</Label>
-                    <Select value={tipoOperacao} onValueChange={setTipoOperacao}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="CR">Contas a Receber</SelectItem>
-                        <SelectItem value="CP">Contas a Pagar</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Perfil</Label>
-                    <Select value={perfil} onValueChange={setPerfil}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Não informado" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="ribeirao">Ribeirão</SelectItem>
-                        <SelectItem value="sao_paulo">São Paulo</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Fornecedor</Label>
-                    <Input value={fornecedor} onChange={(e) => setFornecedor(e.target.value)} />
+                </div>
+
+                {/* SPEC-231 F3: o que o faturamento pode mexer nesta nota */}
+                <div className="space-y-3 rounded-lg border p-4">
+                  <Label className="text-sm font-semibold">Dados da nota</Label>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="space-y-2">
+                      <Label>CPF/CNPJ do destinatário</Label>
+                      <Input
+                        placeholder="O do cadastro"
+                        value={ajustes.destinatarioDoc}
+                        onChange={(e) => setAjustes({ ...ajustes, destinatarioDoc: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Inscrição estadual</Label>
+                      <Input
+                        placeholder="Vazio = não contribuinte · ISENTO"
+                        value={ajustes.destinatarioIe}
+                        onChange={(e) => setAjustes({ ...ajustes, destinatarioIe: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Desconto (R$)</Label>
+                      <Input
+                        inputMode="decimal"
+                        placeholder="0,00"
+                        value={ajustes.valorDesconto}
+                        onChange={(e) => setAjustes({ ...ajustes, valorDesconto: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Frete</Label>
+                      <Select
+                        value={ajustes.modalidadeFrete}
+                        onValueChange={(v) => setAjustes({ ...ajustes, modalidadeFrete: v })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="0">CIF — por conta da Lucenera</SelectItem>
+                          <SelectItem value="1">FOB — por conta do cliente</SelectItem>
+                          <SelectItem value="2">Por conta de terceiros</SelectItem>
+                          <SelectItem value="9">Sem frete</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Transportadora</Label>
+                      <Input
+                        placeholder="Nome (opcional)"
+                        value={ajustes.transportadoraNome}
+                        onChange={(e) => setAjustes({ ...ajustes, transportadoraNome: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>CNPJ da transportadora</Label>
+                      <Input
+                        placeholder="Opcional"
+                        value={ajustes.transportadoraDoc}
+                        onChange={(e) => setAjustes({ ...ajustes, transportadoraDoc: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-2 md:col-span-3">
+                      <Label>Dados adicionais (sai no campo de informações complementares)</Label>
+                      <Textarea
+                        rows={2}
+                        placeholder="Ex.: pedido do cliente nº 123, entrega no endereço da obra..."
+                        value={ajustes.dadosAdicionais}
+                        onChange={(e) => setAjustes({ ...ajustes, dadosAdicionais: e.target.value })}
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -1010,7 +1085,19 @@ export default function Vendas() {
                   </p>
                   <RadioGroup
                     value={pagadorModo}
-                    onValueChange={(v) => setPagadorModo(v as typeof pagadorModo)}
+                    onValueChange={(v) => {
+                      setPagadorModo(v as typeof pagadorModo)
+                      // SPEC-231 F3: CPF/IE preenchidos eram do cliente da venda
+                      setAjustes((x) => ({
+                        ...x,
+                        ...(v === 'venda'
+                          ? {
+                              destinatarioDoc: ajustesDoCliente(vendaAtual).destinatarioDoc,
+                              destinatarioIe: ajustesDoCliente(vendaAtual).destinatarioIe,
+                            }
+                          : { destinatarioDoc: '', destinatarioIe: '' }),
+                      }))
+                    }}
                     className="gap-3"
                   >
                     <div className="flex items-center gap-2">
@@ -1136,7 +1223,15 @@ export default function Vendas() {
                     </Table>
                   </div>
                   <p className="text-right text-sm font-semibold">
-                    Total desta nota: {formatCurrency(valorTotalSelecionado)}
+                    Total desta nota:{' '}
+                    {formatCurrency(
+                      valorTotalSelecionado - (Number(ajustes.valorDesconto.replace(',', '.')) || 0),
+                    )}
+                    {Number(ajustes.valorDesconto.replace(',', '.')) > 0 && (
+                      <span className="ml-1 font-normal text-muted-foreground">
+                        (produtos {formatCurrency(valorTotalSelecionado)} − desconto)
+                      </span>
+                    )}
                   </p>
                 </div>
               </div>
@@ -1146,7 +1241,7 @@ export default function Vendas() {
                   Voltar ao espelho
                 </Button>
                 <Button onClick={handleRegistrar} disabled={submitting}>
-                  {submitting ? 'Registrando...' : 'Registrar Nota Fiscal (rascunho)'}
+                  {submitting ? 'Salvando...' : 'Continuar para emitir'}
                 </Button>
               </DialogFooter>
             </>

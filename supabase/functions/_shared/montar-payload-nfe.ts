@@ -87,6 +87,19 @@ export interface MontarPayloadInput {
   freteTipo: string | null
   /** SPEC-165: orcamentos.forma_pagamento (pix, boleto, cartao, dinheiro...). */
   formaPagamento?: string | null
+  /** SPEC-231 F3: o que o faturamento ajustou nesta nota (nulo = cadastro/orçamento). */
+  ajustes?: AjustesNota | null
+}
+
+export interface AjustesNota {
+  dadosAdicionais: string | null
+  /** modFrete: 0 CIF, 1 FOB, 2 terceiros, 9 sem frete */
+  modalidadeFrete: string | null
+  transportadoraNome: string | null
+  transportadoraDoc: string | null
+  valorDesconto: number | null
+  destinatarioDoc: string | null
+  destinatarioIe: string | null
 }
 
 export interface MontarPayloadResultado {
@@ -155,9 +168,18 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
     )
   }
 
-  const destinatarioDoc = input.destinatario
-    ? soDigitos(input.destinatario.cpf_cnpj || input.destinatario.cnpj || input.destinatario.cpf)
-    : ''
+  const aj = input.ajustes ?? null
+  // SPEC-231 F3: CPF/CNPJ e IE corrigidos na tela valem só para esta nota
+  const destinatarioDoc =
+    soDigitos(aj?.destinatarioDoc) ||
+    (input.destinatario
+      ? soDigitos(input.destinatario.cpf_cnpj || input.destinatario.cnpj || input.destinatario.cpf)
+      : '')
+  const ieInformada = (aj?.destinatarioIe ?? input.destinatario?.inscricao_estadual ?? '').trim()
+  const ieIsento = ieInformada.toUpperCase() === 'ISENTO'
+  const ieDestinatario = ieIsento ? null : ieInformada || null
+  // indIEDest: 1 contribuinte, 2 isento, 9 não contribuinte
+  const indicadorIe = ieDestinatario ? '1' : ieIsento ? '2' : '9'
   if (!destinatarioDoc) {
     // Pendência aberta na SPEC-154 ("política de pagador sem CPF/CNPJ" --
     // decisão de negócio não tomada nesta SPEC): até essa decisão existir,
@@ -193,7 +215,7 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
       `Destinatário em ${ufDestino} (emitente em ${ufEmitente}): venda interestadual exige CFOP 6xxx/DIFAL, pendente de validação do contador (SPEC-165).`,
     )
   }
-  const consumidorFinal = input.destinatario?.inscricao_estadual ? '0' : '1'
+  const consumidorFinal = ieDestinatario ? '0' : '1'
 
   const itensPayload = input.itens.map((item, idx) => {
     const numeroItem = idx + 1
@@ -256,6 +278,26 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
   const semFrete = input.freteTipo === 'sem_frete' || !input.freteValor
   const valorProdutos =
     Math.round(itensPayload.reduce((acc, it) => acc + Number(it.valor_bruto || 0), 0) * 100) / 100
+
+  // SPEC-231 F3: desconto da nota rateado nos itens pelo valor (o último leva o arredondamento)
+  const desconto = Math.round((aj?.valorDesconto || 0) * 100) / 100
+  if (desconto > 0) {
+    if (desconto >= valorProdutos) {
+      return { payload: null, bloqueantes: ['Desconto maior ou igual ao total dos produtos.'], avisos }
+    }
+    let restante = desconto
+    itensPayload.forEach((it, i) => {
+      const parte =
+        i === itensPayload.length - 1
+          ? restante
+          : Math.round(((Number(it.valor_bruto || 0) / valorProdutos) * desconto) * 100) / 100
+      restante = Math.round((restante - parte) * 100) / 100
+      ;(it as Record<string, unknown>).valor_desconto = parte
+    })
+  }
+  const valorNota = Math.round((valorProdutos - desconto) * 100) / 100
+  const modalidadeFrete = aj?.modalidadeFrete || (semFrete ? '9' : '0')
+  const docTransportadora = soDigitos(aj?.transportadoraDoc)
   const formaNormalizada = (input.formaPagamento || '').trim().toLowerCase()
   const tPag = FORMA_PAGAMENTO_NFE[formaNormalizada] || '99'
   if (tPag === '99') {
@@ -268,8 +310,10 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
   )
   avisos.push(
     `presenca_comprador default "9" (não presencial, outros) -- venda não registra esse dado ainda.`,
-    `indicador_ie_destinatario default "${input.destinatario?.inscricao_estadual ? '1' : '9'}" com base em ter/não ter IE cadastrada.`,
-    `modalidade_frete default "${semFrete ? '9' : '0'}" com base em orcamentos.frete_tipo.`,
+    `indicador_ie_destinatario "${indicadorIe}" (IE ${ieIsento ? 'ISENTO' : ieDestinatario ? 'informada' : 'não informada'}).`,
+    aj?.modalidadeFrete
+      ? `modalidade_frete "${modalidadeFrete}" escolhida na emissão.`
+      : `modalidade_frete default "${modalidadeFrete}" com base em orcamentos.frete_tipo.`,
     ...(semFrete
       ? []
       : [
@@ -292,13 +336,19 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
     tipo_documento: 1, // saída
     finalidade_emissao: '1', // NF-e normal
     presenca_comprador: '9',
-    modalidade_frete: semFrete ? '9' : '0',
+    modalidade_frete: modalidadeFrete,
+    // SPEC-231 F3: transportadora e dados adicionais digitados na emissão
+    ...(aj?.transportadoraNome ? { nome_transportador: aj.transportadoraNome } : {}),
+    ...(docTransportadora.length === 14 ? { cnpj_transportador: docTransportadora } : {}),
+    ...(docTransportadora.length === 11 ? { cpf_transportador: docTransportadora } : {}),
+    ...(aj?.dadosAdicionais ? { informacoes_adicionais_contribuinte: aj.dadosAdicionais } : {}),
+    ...(desconto > 0 ? { valor_desconto: desconto } : {}),
     cnpj_emitente: cnpjEmitente,
     // SPEC-165: campos que faltavam no JSON.
     regime_tributario_emitente: crt,
     local_destino: interestadual ? 2 : 1,
     consumidor_final: consumidorFinal,
-    formas_pagamento: [{ forma_pagamento: tPag, valor_pagamento: valorProdutos }],
+    formas_pagamento: [{ forma_pagamento: tPag, valor_pagamento: valorNota }],
 
     // CNPJ tem 14 dígitos, CPF tem 11 -- é assim que a própria Focus espera
     // que a gente escolha entre os dois campos mutuamente exclusivos.
@@ -316,8 +366,8 @@ export function montarPayloadNFe(input: MontarPayloadInput): MontarPayloadResult
           cep_destinatario: soDigitos(input.destinatario.cep) || null,
           telefone_destinatario: soDigitos(input.destinatario.telefone) || null,
           ...(input.destinatario.email ? { email_destinatario: input.destinatario.email } : {}),
-          inscricao_estadual_destinatario: input.destinatario.inscricao_estadual || null,
-          indicador_inscricao_estadual_destinatario: input.destinatario.inscricao_estadual ? '1' : '9',
+          inscricao_estadual_destinatario: ieDestinatario,
+          indicador_inscricao_estadual_destinatario: indicadorIe,
         }
       : {
           cpf_destinatario: destinatarioDoc,

@@ -107,6 +107,8 @@ Deno.serve(async (req: Request) => {
       .select(
         `
         id, ref, tentativa_atual, status_emissao, cliente_id, nome_destinatario, orcamento_id,
+        dados_adicionais, modalidade_frete, transportadora_nome, transportadora_cnpj, valor_desconto,
+        destinatario_cpf_cnpj, destinatario_ie,
         cliente:contatos(id, nome, razao_social, cpf_cnpj, cnpj, cpf, inscricao_estadual, endereco, numero, bairro, cidade, estado, cep, telefone, email),
         orcamento:orcamentos(
           id, numero_venda, frete_valor, frete_tipo, forma_pagamento, cliente_id, empresa_id,
@@ -272,6 +274,16 @@ Deno.serve(async (req: Request) => {
       freteValor: orcamento.frete_valor != null ? Number(orcamento.frete_valor) : null,
       freteTipo: orcamento.frete_tipo ?? null,
       formaPagamento: orcamento.forma_pagamento ?? null,
+      // SPEC-231 F3: ajustes feitos na tela de emissão (definir_dados_emissao_nota_fiscal)
+      ajustes: {
+        dadosAdicionais: nota.dados_adicionais ?? null,
+        modalidadeFrete: nota.modalidade_frete ?? null,
+        transportadoraNome: nota.transportadora_nome ?? null,
+        transportadoraDoc: nota.transportadora_cnpj ?? null,
+        valorDesconto: nota.valor_desconto != null ? Number(nota.valor_desconto) : null,
+        destinatarioDoc: nota.destinatario_cpf_cnpj ?? null,
+        destinatarioIe: nota.destinatario_ie ?? null,
+      },
     })
 
     // Pré-validação interna (nunca chegou a ir pra Focus) -- mesmo
